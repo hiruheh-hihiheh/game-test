@@ -2979,7 +2979,7 @@ func _rec_files(kind := "") -> Array:
 	var d := DirAccess.open(_rec_dir())
 	if d != null:
 		for f in d.get_files():
-			if f.length() > 7 and f.substr(0, 6).is_valid_int() and f[6] == "_" and (kind == "" or f.substr(7).begins_with(kind)):
+			if f.length() > 7 and f.substr(0, 6).is_valid_int() and f[6] == "_" and not f.ends_with(".unverified") and not f.ends_with(".part") and (kind == "" or f.substr(7).begins_with(kind)):
 				out.append(_rec_dir() + "/" + f)
 	out.sort()
 	return out
@@ -3291,6 +3291,7 @@ func _test_cloud_preservation() -> void:
 	await _free_cloud(cloud13)
 	_clear_cloud_files()
 	await _test_cloud_recovery_history()
+	await _test_cloud_recovery_safety()
 	print("cloud preservation ok")
 
 ## An earlier recovery file is never overwritten, truncated or removed by a later operation, successful or not.
@@ -3475,6 +3476,7 @@ func _test_cloud_recovery_history() -> void:
 	var before_e: Dictionary = _rec_snapshot()
 	var readme_before := _read_blob(_rec_dir() + "/README.txt")
 	check(not readme_before.is_empty(), "E: the folder explains itself in a README.txt")
+	cloud.fake_pid = 2147483000  # the interrupted writer is a process that is no longer running
 	for mode in ["fail_store_for", "fail_promote_for"]:
 		cloud.keep_temp_on_failure = true
 		cloud.set(mode, "cloud_save")
@@ -3485,6 +3487,7 @@ func _test_cloud_recovery_history() -> void:
 		check(not _rec_temps().is_empty(), "E (%s): the interrupted write left a temporary file, as a crash would" % mode)
 		cloud.keep_temp_on_failure = false
 		cloud.set(mode, "")
+	cloud.fake_pid = 0
 	var temps_before: int = _rec_temps().size()
 	var removed: int = cloud.cleanup_recovery_temps()
 	check(removed == temps_before and removed >= 2 and _rec_temps().is_empty(), "E: cleanup removes the unfinished temporary files (%d)" % removed)
@@ -3500,6 +3503,261 @@ func _test_cloud_recovery_history() -> void:
 func recovery_newest_is(cloud, path: String) -> bool:
 	var files: PackedStringArray = cloud.recovery_files()
 	return not files.is_empty() and files[files.size() - 1] == path
+
+func _rec_unverified() -> Array:
+	var out: Array = []
+	var d := DirAccess.open(_rec_dir())
+	if d != null:
+		for f in d.get_files():
+			if f.ends_with(".unverified"):
+				out.append(_rec_dir() + "/" + f)
+	return out
+
+func _rec_reservations() -> Array:
+	var out: Array = []
+	var d := DirAccess.open(_rec_dir())
+	if d != null:
+		for sub in d.get_directories():
+			if sub.ends_with(".set"):
+				out.append(sub)
+	out.sort()
+	return out
+
+func _plain_faulty(faulty):
+	return _make_cloud(_cloud_mock_script.new(), false, faulty)
+
+## How recovery files are protected from being overwritten: a reservation made by creating a directory, a promotion that
+## refuses an existing destination, a read-back after promotion, a README that is recreated, and temporary files that
+## are only cleaned up when their process is gone.
+func _test_cloud_recovery_safety() -> void:
+	var CS = _cloud_script_class()
+	var St = CS.Status
+	var faulty = load("res://tools/faulty_cloud_sync.gd")
+	var payload := PackedByteArray([1, 2, 3, 4, 5, 6, 7, 8, 9])
+
+	# --- The reservation primitive: creating a taken directory reports that it exists ---
+	_cloud_rich_save()
+	_clear_cloud_files()
+	var a = _plain_faulty(faulty)
+	var rec_a: Dictionary = a._recovery_reserve()
+	check(not rec_a.is_empty() and DirAccess.dir_exists_absolute(str(rec_a.path)), "a generation can be reserved")
+	check(DirAccess.make_dir_absolute(str(rec_a.path)) == ERR_ALREADY_EXISTS, "creating the same reservation again is refused with 'already exists'")
+
+	# --- Two writers after the same generation: only one can own it ---
+	check(a._recovery_put(rec_a, "cloud_save", "blob", payload), "the owner writes its file")
+	var before: Dictionary = _rec_snapshot()
+	var b = _plain_faulty(faulty)
+	b.force_generation = int(rec_a.gen)
+	b.force_calls = 1
+	var rec_b: Dictionary = b._recovery_reserve()
+	check(not rec_b.is_empty() and int(rec_b.gen) != int(rec_a.gen), "a second writer that tries the same number is refused it and gets another")
+	check(_rec_snapshot() == before, "and the first writer's recovery files are untouched by that")
+	var other := PackedByteArray([9, 9, 9])
+	check(b._recovery_put(rec_b, "cloud_save", "blob", other) and _rec_snapshot().size() == 2, "the second writer's file goes under its own number")
+	check(a._recovery_put(rec_a, "local_progress", "blob", payload) and _read_blob("%s/%06d_cloud_save.blob" % [_rec_dir(), int(rec_a.gen)]) == payload, "the first writer can still finish its own set, and its first file is exact")
+	# A writer that keeps losing gives up, safely.
+	var c = _plain_faulty(faulty)
+	c.force_generation = int(rec_a.gen)
+	c.force_calls = 100
+	c.reserve_attempts = 1
+	var snap2: Dictionary = _rec_snapshot()
+	var reservations_before: Array = _rec_reservations()
+	check(c._recovery_reserve().is_empty(), "a writer that cannot get a number fails instead of writing")
+	check(not c._keep_copy_of_cloud(payload) and _rec_snapshot() == snap2 and _rec_reservations() == reservations_before, "and its backup is reported as failed with nothing written, renamed or removed")
+	a._recovery_finish(rec_a)
+	b._recovery_finish(rec_b)
+	check(_rec_reservations().size() == 2, "finished reservations with files stay, as the record of their generation")
+	for cl in [a, b, c]:
+		await _free_cloud(cl)
+
+	# --- A reservation that wrote nothing is released; a finished one is never reclaimed by anyone ---
+	_clear_cloud_files()
+	var d = _plain_faulty(faulty)
+	var rec_d: Dictionary = d._recovery_reserve()
+	d._recovery_finish(rec_d)
+	check(not DirAccess.dir_exists_absolute(str(rec_d.path)), "a reservation that wrote nothing releases itself")
+	var rec_e: Dictionary = d._recovery_reserve()
+	var rec_f: Dictionary = d._recovery_reserve()
+	check(int(rec_e.gen) != int(rec_f.gen) and DirAccess.dir_exists_absolute(str(rec_e.path)) and DirAccess.dir_exists_absolute(str(rec_f.path)), "an unfinished reservation (a crashed writer's) stays, and later writers take other numbers")
+	await _free_cloud(d)
+
+	# --- The destination collision: a file appears at the exact destination after the checks, before promotion ---
+	_cloud_rich_save()
+	_clear_cloud_files()
+	var s1 = _plain_faulty(faulty)
+	s1.sentinel_for = "cloud_save"
+	var rec_s: Dictionary = s1._recovery_reserve()
+	var dest := "%s/%06d_cloud_save.blob" % [_rec_dir(), int(rec_s.gen)]
+	check(not FileAccess.file_exists(dest), "the destination is free at first, so the early check passes")
+	var wrote: bool = s1._recovery_put(rec_s, "cloud_save", "blob", payload)
+	check(not wrote and _read_blob(dest) == s1.sentinel_bytes, "promotion refused to replace the sentinel: it reports failure and the sentinel's bytes are unchanged")
+	check(_rec_temps().is_empty(), "and the staged temporary file was discarded")
+	s1._recovery_finish(rec_s)
+	check(_read_blob(dest) == s1.sentinel_bytes, "finishing the operation leaves the sentinel alone too")
+	await _free_cloud(s1)
+	# The same through a real decision.
+	_cloud_rich_save()
+	_clear_cloud_files()
+	var local_before: Dictionary = save.to_dict()
+	var junk: PackedByteArray = _corrupt_blob(CS.encode(local_before))
+	var mock = _cloud_mock_script.new()
+	mock.set_blob(junk)
+	var s2 = _faulty_cloud(mock, faulty)
+	await _cloud_settle(s2)
+	s2.sentinel_for = "cloud_save"
+	s2.keep_local()
+	await process_frame
+	var cs_files := _rec_files("cloud_save")
+	check(s2.status() == St.CONFLICT and mock.blob == junk and mock.saves == 0 and CS.progress_hash(save.to_dict()) == CS.progress_hash(local_before) and s2.choice_error != "", "KEEP THIS DEVICE'S SAVE is blocked when its destination was taken, and nothing is replaced")
+	check(cs_files.size() == 1 and _read_blob(cs_files[0]) == s2.sentinel_bytes, "the file that took the destination is exactly as it was")
+	s2.sentinel_for = ""
+	s2.keep_local()
+	await _cloud_settle(s2)
+	var after := _rec_files("cloud_save")
+	check(s2.status() == St.SYNCED and after.size() == 2 and _read_blob(after[0]) == s2.sentinel_bytes and _read_blob(after[1]) == junk, "and the next attempt takes a new number and succeeds beside it")
+	await _free_cloud(s2)
+
+	# --- The promoted file fails its final read-back ---
+	_cloud_rich_save()
+	_clear_cloud_files()
+	var older: Dictionary = save.to_dict()
+	older.salvage = 61
+	var important: PackedByteArray = _corrupt_blob(CS.encode(older))
+	var newer: Dictionary = save.to_dict()
+	newer.salvage = 62
+	var junk_r: PackedByteArray = _corrupt_blob(CS.encode(newer))
+	var mock3 = _cloud_mock_script.new()
+	mock3.set_blob(important)
+	var r1 = _faulty_cloud(mock3, faulty)
+	await _cloud_settle(r1)
+	r1.keep_local()
+	await _cloud_settle(r1)
+	await _unreadable_conflict(mock3, r1, junk_r)
+	var existing: Dictionary = _rec_snapshot()
+	check(r1.status() == St.CONFLICT and existing.size() == 1, "an earlier recovery file exists")
+	r1.corrupt_after_promote_for = "cloud_save"
+	r1.keep_local()
+	await process_frame
+	check(r1.status() == St.CONFLICT and mock3.blob == junk_r and mock3.saves == 1 and r1.choice_error != "", "a final read-back failure blocks the decision and replaces nothing")
+	check(_rec_snapshot() == existing, "the earlier recovery file is identical, and no unverified file stands as a valid numbered copy")
+	var bad := _rec_unverified()
+	check(bad.size() == 1 and str(bad[0]).ends_with(".blob.unverified") and _rec_temps().is_empty(), "the failed copy is set aside as .unverified, and no temporary file is left")
+	r1.corrupt_after_promote_for = ""
+	r1.keep_local()
+	await _cloud_settle(r1)
+	var good := _rec_files("cloud_save")
+	check(r1.status() == St.SYNCED and good.size() == 2 and _read_blob(good[0]) == important and _read_blob(good[1]) == junk_r and _rec_unverified().size() == 1, "and the retry succeeds, keeping the old copy, with the unverified one still set aside")
+	await _free_cloud(r1)
+
+	# --- README: recreated when missing, never overwritten, never claimed when it could not be written ---
+	_cloud_rich_save()
+	_clear_cloud_files()
+	DirAccess.make_dir_recursive_absolute(_rec_dir())
+	var h1 = _plain_faulty(faulty)
+	check(not h1.recovery_folder_ready(), "a recovery folder without a README is not reported ready")
+	var rec_h: Dictionary = h1._recovery_reserve()
+	check(not rec_h.is_empty() and FileAccess.file_exists(_rec_dir() + "/README.txt") and h1.readme_ok and h1.recovery_folder_ready(), "an existing folder with no README gets one the next time it is used")
+	h1._recovery_finish(rec_h)
+	var custom := "my own notes".to_utf8_buffer()
+	var f := FileAccess.open(_rec_dir() + "/README.txt", FileAccess.WRITE)
+	f.store_buffer(custom)
+	f.close()
+	var rec_h2: Dictionary = h1._recovery_reserve()
+	check(_read_blob(_rec_dir() + "/README.txt") == custom, "an existing README is never overwritten")
+	h1._recovery_finish(rec_h2)
+	await _free_cloud(h1)
+	_clear_cloud_files()
+	var h2 = _plain_faulty(faulty)
+	h2.fail_open_for = "readme"
+	var rec_h3: Dictionary = h2._recovery_reserve()
+	check(not rec_h3.is_empty() and not h2.readme_ok and not h2.recovery_folder_ready() and not FileAccess.file_exists(_rec_dir() + "/README.txt"), "when the README cannot be written the folder is not reported fully ready")
+	check(h2._recovery_put(rec_h3, "cloud_save", "blob", payload) and _rec_files("cloud_save").size() == 1, "but a recovery copy still goes ahead")
+	h2._recovery_finish(rec_h3)
+	h2.fail_open_for = ""
+	var rec_h4: Dictionary = h2._recovery_reserve()
+	check(h2.readme_ok and h2.recovery_folder_ready() and FileAccess.file_exists(_rec_dir() + "/README.txt"), "and the README is created on the next use")
+	h2._recovery_finish(rec_h4)
+	await _free_cloud(h2)
+
+	# --- Temporary files: a running process's is never touched; a dead process's is cleaned up ---
+	_clear_cloud_files()
+	var t1 = _plain_faulty(faulty)
+	var rec_t: Dictionary = t1._recovery_reserve()
+	var valid := PackedByteArray([7, 7, 7])
+	check(t1._recovery_put(rec_t, "cloud_save", "blob", valid), "a recovery copy to protect")
+	var live := _rec_dir() + "/tmp_cloud_save_%d_1_1.part" % OS.get_process_id()
+	var dead := _rec_dir() + "/tmp_cloud_save_2147483000_1_1.part"
+	_write_text(live, "a write in progress in a running process")
+	_write_text(dead, "left by a process that crashed")
+	var snap_t: Dictionary = _rec_snapshot()
+	var removed: int = t1.cleanup_recovery_temps()
+	check(removed == 1 and FileAccess.file_exists(live) and not FileAccess.file_exists(dead), "cleanup removes a dead process's temporary file and leaves a running process's alone")
+	check(_rec_snapshot() == snap_t and FileAccess.file_exists(_rec_dir() + "/README.txt") and _rec_reservations().size() == 1, "and touches no recovery file, README or reservation")
+	DirAccess.remove_absolute(live)
+	t1._recovery_finish(rec_t)
+	await _free_cloud(t1)
+	_clear_cloud_files()
+
+	await _test_cloud_two_processes()
+	print("cloud recovery safety ok")
+
+## Two real game processes share one save path and race for recovery generations. This is the evidence for the
+## reservation, on this machine only: it does not prove anything about another operating system or file system.
+func _test_cloud_two_processes() -> void:
+	var shared := "user://qa_contention_%d.cfg" % OS.get_process_id()
+	var shared_abs := ProjectSettings.globalize_path(shared)
+	var count := 25
+	var start := Time.get_unix_time_from_system() + 8.0
+	var pids: Array = []
+	for tag in ["A", "B"]:
+		var args := ["--headless", "--path", ProjectSettings.globalize_path("res://"), "--script", "res://tools/recovery_contention.gd", "--", "--test", "--path=" + shared, "--tag=" + tag, "--count=%d" % count, "--start=%f" % start]
+		pids.append(OS.create_process(OS.get_executable_path(), args))
+	check(int(pids[0]) > 0 and int(pids[1]) > 0, "two separate game processes were started")
+	var deadline := Time.get_ticks_msec() + 120000
+	while Time.get_ticks_msec() < deadline:
+		if FileAccess.file_exists(shared + ".result_A") and FileAccess.file_exists(shared + ".result_B"):
+			break
+		await create_timer(0.5).timeout
+	await create_timer(0.5).timeout
+	var owners := {}
+	var total_ok := 0
+	var none := 0
+	for tag in ["A", "B"]:
+		var text := FileAccess.get_file_as_string(shared + ".result_" + tag)
+		check(not text.is_empty(), "process %s reported" % tag)
+		for line in text.split("\n", false):
+			if line == "none":
+				none += 1
+				continue
+			var bits := line.split(" ")
+			var gen := int(bits[0])
+			check(not owners.has(gen), "generation %d was reserved by one process only" % gen)
+			owners[gen] = bits[3]
+			if bits[1] == "true" and bits[2] == "true":
+				total_ok += 1
+	check(total_ok == owners.size() and total_ok + none == count * 2, "every reservation produced both files (%d sets, %d gave up)" % [total_ok, none])
+	var files := DirAccess.get_files_at(shared + ".recovery")
+	var recovery_count := 0
+	var intact := true
+	for gen in owners:
+		var tag_i: String = owners[gen]
+		var tagname := tag_i.split("-")[0]
+		var idx := int(tag_i.split("-")[1])
+		var expect := ("%s-%d-" % [tagname, idx]).repeat(300).to_utf8_buffer()
+		for kind in ["cloud_save", "local_progress"]:
+			var p := "%s.recovery/%06d_%s.blob" % [shared, int(gen), kind]
+			recovery_count += 1
+			if _read_blob(p) != expect:
+				intact = false
+	check(intact and recovery_count == total_ok * 2, "each generation's files hold exactly what its owner wrote, and no file was overwritten by the other process")
+	var tmp_left := 0
+	for f in files:
+		if f.ends_with(".part"):
+			tmp_left += 1
+	check(tmp_left == 0, "no temporary file was left behind")
+	save.remove_recovery(shared)
+	DirAccess.remove_absolute(shared + ".result_A")
+	DirAccess.remove_absolute(shared + ".result_B")
 
 func _sha(bytes: PackedByteArray) -> String:
 	var ctx := HashingContext.new()

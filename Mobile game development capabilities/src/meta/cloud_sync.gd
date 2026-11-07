@@ -407,37 +407,66 @@ func _backup_failed(what: String) -> void:
 # ---------- Recovery copies ----------
 #
 # Every copy that makes a replacement recoverable goes in one folder beside the save, starfall_save.cfg.recovery/.
-# Each operation gets the next generation number and its files are named <generation>_<kind>.<ext>:
-#   cloud_save        a cloud save exactly as the cloud sent it, kept before this device's save replaced it
-#   local_save_file   a copy of starfall_save.cfg, kept before a cloud save replaced the progress
-#   local_progress    the same progress in the cloud blob format
-#   google_version_N  a version Google reported in a snapshot conflict
-# A recovery file is NEVER overwritten and never deleted by the game. A new file is written to a temporary name,
-# read back and compared byte for byte, and only then renamed into place, so a failure at any step leaves every
-# earlier recovery file as it was. Only unfinished temporary files (tmp_*.part) are ever removed.
+#
+# Reservation. A logical operation (both files of a local restore, both Google versions, a single cloud copy) first
+# RESERVES a generation number by creating the directory <recovery>/<generation>.set. Creating a directory either
+# succeeds for exactly one caller or reports that it already exists (ERR_ALREADY_EXISTS), so two game processes
+# sharing one save can never own the same generation. A caller that loses moves on to the next number; after a few
+# tries it fails, and the backup is reported as failed. The reservation is never released or reclaimed, because it is
+# also the record of the generation: nothing can be abandoned in a way that blocks anyone, and a crashed writer's
+# number simply stays used. (Only an operation that wrote nothing removes its own, empty, reservation.) The operation
+# writes <generation>_<kind>.<ext> files, and only the owner of the reservation ever writes files carrying that number.
+#
+# Writing. A file is written to a temporary name, read back and compared byte for byte, and renamed into place.
+# Godot's rename replaces an existing destination, so promotion first checks that the destination does not exist and
+# refuses if it does. That check is NOT atomic and is not what keeps writers apart: it is a second line of defence
+# against something that is not part of this code. After the rename the file is read back once more; if it does not
+# match, it is renamed to <name>.unverified so it can never pass for a good copy.
+#
+# Nothing here ever overwrites, truncates or deletes a recovery file of an earlier operation. Unfinished temporary
+# files (tmp_*.part) are removed only if the process that made them is no longer running.
+
+const RESERVE_ATTEMPTS := 16
+
+## False after a start-up or backup where README.txt could not be written. Backups still go ahead: the README only
+## explains the folder, and refusing a recovery copy for it would be worse.
+var readme_ok := false
+var reserve_attempts := RESERVE_ATTEMPTS
 
 func _recovery_dir() -> String:
 	return Save.path + ".recovery"
 
+func _reservation_path(gen: int) -> String:
+	return "%s/%06d.set" % [_recovery_dir(), gen]
+
+## Makes the folder if needed, and writes README.txt whenever it is missing (never over an existing one).
+## True when the folder can be used.
 func _ensure_recovery_dir() -> bool:
 	var dir := _recovery_dir()
-	if DirAccess.dir_exists_absolute(dir):
-		return true
-	if DirAccess.make_dir_recursive_absolute(dir) != OK or not DirAccess.dir_exists_absolute(dir):
-		return false
-	_write_readme()
+	if not DirAccess.dir_exists_absolute(dir):
+		if DirAccess.make_dir_recursive_absolute(dir) != OK or not DirAccess.dir_exists_absolute(dir):
+			readme_ok = false
+			return false
+	readme_ok = FileAccess.file_exists(dir + "/README.txt") or _write_readme()
 	return true
 
-func _write_readme() -> void:
-	var text := "Starfall Salvage recovery copies\n\nEach number is one operation. The highest number is the newest.\nDo not delete anything here until you have recovered what you need.\n\ncloud_save        a cloud save, exactly as the cloud sent it, kept before this device's save replaced it\nlocal_save_file   a copy of this device's save file, kept before a cloud save replaced it\nlocal_progress    the same progress as a cloud blob (plain text)\ngoogle_version_N  a version Google reported in a snapshot conflict\n\ntmp_*.part files are unfinished writes and are safe to delete.\n"
-	var tmp := _temp_path("readme")
-	if _write_verified(tmp, text.to_utf8_buffer()) and not FileAccess.file_exists(_recovery_dir() + "/README.txt"):
-		if not _promote(tmp, _recovery_dir() + "/README.txt"):
-			_discard(tmp)
-	else:
-		_discard(tmp)
+## True when the recovery folder exists and explains itself.
+func recovery_folder_ready() -> bool:
+	return DirAccess.dir_exists_absolute(_recovery_dir()) and FileAccess.file_exists(_recovery_dir() + "/README.txt")
 
-## The next unused generation number: one more than the highest in the folder.
+func _write_readme() -> bool:
+	var text := "Starfall Salvage recovery copies\n\nEach operation has a number. The highest number is the newest.\nDo not delete anything here until you have recovered what you need.\n\nNNNNNN.set         marks that number as taken (an empty folder). Keep it.\ncloud_save         a cloud save, exactly as the cloud sent it, kept before this device's save replaced it\nlocal_save_file    a copy of this device's save file, kept before a cloud save replaced it\nlocal_progress     the same progress as a cloud blob (plain text)\ngoogle_version_N   a version Google reported in a snapshot conflict\n\n*.unverified       a copy that did not read back correctly. Do not trust it.\ntmp_*.part         an unfinished write. Safe to delete.\n"
+	var dest := _recovery_dir() + "/README.txt"
+	var tmp := _temp_path("readme")
+	if not _write_verified(tmp, text.to_utf8_buffer()):
+		_discard(tmp)
+		return false
+	if not _promote(tmp, dest):
+		_discard(tmp)
+		return FileAccess.file_exists(dest)  # someone else wrote it first: that counts, and theirs is untouched
+	return true
+
+## The next number to try: one more than the highest number in use, whether as a file or as a reservation.
 func _next_generation() -> int:
 	var top := 0
 	var d := DirAccess.open(_recovery_dir())
@@ -445,18 +474,47 @@ func _next_generation() -> int:
 		for f in d.get_files():
 			if f.length() > 7 and f.substr(0, 6).is_valid_int() and f[6] == "_":
 				top = maxi(top, int(f.substr(0, 6)))
+		for sub in d.get_directories():
+			if sub.length() == 10 and sub.ends_with(".set") and sub.substr(0, 6).is_valid_int():
+				top = maxi(top, int(sub.substr(0, 6)))
 	return top + 1
 
-func _temp_path(kind: String) -> String:
-	return "%s/tmp_%s_%d_%d.part" % [_recovery_dir(), kind, Time.get_ticks_usec(), randi() % 1000000]
-
-## Writes one new recovery file: to a temporary name first (from `bytes`, or by copying `source` when it is given),
-## verified byte for byte, then renamed to <generation>_<kind>.<ext>. An existing file is never replaced. On any
-## failure the temporary file is discarded and every earlier file is untouched.
-func _recovery_put(gen: int, kind: String, ext: String, bytes: PackedByteArray, source := "") -> bool:
+## Reserves a generation for one logical operation. Returns {gen, path, written}, or {} if the folder cannot be used or
+## no number could be taken (another writer kept winning): the caller must then treat the backup as failed.
+func _recovery_reserve() -> Dictionary:
 	if not _ensure_recovery_dir():
+		return {}
+	var last := 0
+	for attempt in range(maxi(reserve_attempts, 1)):
+		var gen := maxi(_next_generation(), last + 1)
+		last = gen
+		var path := _reservation_path(gen)
+		var err := DirAccess.make_dir_absolute(path)
+		if err == OK:
+			return {"gen": gen, "path": path, "written": 0}
+		if err != ERR_ALREADY_EXISTS:
+			return {}
+	return {}
+
+## Ends an operation. A reservation that wrote nothing is removed (only an empty directory can be); otherwise it stays,
+## as the record of that generation.
+func _recovery_finish(rec: Dictionary) -> void:
+	if not rec.is_empty() and int(rec.written) == 0:
+		DirAccess.remove_absolute(str(rec.path))
+
+func _temp_path(kind: String) -> String:
+	return "%s/tmp_%s_%d_%d_%d.part" % [_recovery_dir(), kind, _process_id(), Time.get_ticks_usec(), randi() % 1000000]
+
+func _process_id() -> int:
+	return OS.get_process_id()
+
+## Writes one new file of a reserved generation. Staged in a temporary file (from `bytes`, or copied from `source`),
+## verified, then renamed to <generation>_<kind>.<ext>. An existing file of that name is never replaced. On failure the
+## temporary file is discarded, and any bad numbered file is renamed .unverified; earlier recovery files are untouched.
+func _recovery_put(rec: Dictionary, kind: String, ext: String, bytes: PackedByteArray, source := "") -> bool:
+	if rec.is_empty():
 		return false
-	var dest := "%s/%06d_%s.%s" % [_recovery_dir(), gen, kind, ext]
+	var dest := "%s/%06d_%s.%s" % [_recovery_dir(), int(rec.gen), kind, ext]
 	if FileAccess.file_exists(dest):
 		return false
 	var tmp := _temp_path(kind)
@@ -466,11 +524,21 @@ func _recovery_put(gen: int, kind: String, ext: String, bytes: PackedByteArray, 
 		bytes = FileAccess.get_file_as_bytes(source) if ok else PackedByteArray()
 	else:
 		ok = _write_verified(tmp, bytes)
-	if ok:
-		ok = _promote(tmp, dest) and FileAccess.get_file_as_bytes(dest) == bytes
 	if not ok:
 		_discard(tmp)
-	return ok
+		return false
+	_after_staged(dest)
+	if not _promote(tmp, dest):
+		_discard(tmp)
+		return false
+	_after_promoted(dest)
+	if FileAccess.get_file_as_bytes(dest) != bytes:
+		# It is our own new file, in a generation we reserved. It must not stand as a good copy.
+		if DirAccess.rename_absolute(dest, dest + ".unverified") != OK:
+			DirAccess.remove_absolute(dest)
+		return false
+	rec.written = int(rec.written) + 1
+	return true
 
 ## A temporary file written, closed and read back. True only if it holds exactly `bytes`.
 func _write_verified(file_path: String, bytes: PackedByteArray) -> bool:
@@ -481,7 +549,7 @@ func _write_verified(file_path: String, bytes: PackedByteArray) -> bool:
 	f.close()
 	return wrote and FileAccess.get_file_as_bytes(file_path) == bytes
 
-## File access is in these small functions so tests can make each step fail.
+## File access is in these small functions so tests can make each step fail or interfere.
 func _open_write(file_path: String) -> FileAccess:
 	return FileAccess.open(file_path, FileAccess.WRITE)
 
@@ -492,64 +560,91 @@ func _store_bytes(f: FileAccess, _file_path: String, bytes: PackedByteArray) -> 
 func _copy_file(from: String, to: String) -> bool:
 	return DirAccess.copy_absolute(from, to) == OK and FileAccess.get_file_as_bytes(to) == FileAccess.get_file_as_bytes(from)
 
+## Moves a verified temporary file to its final name, refusing if that name is already taken. Godot's rename replaces an
+## existing destination, so this check is what stops it; it is a check, not an atomic reservation (see above).
 func _promote(tmp: String, dest: String) -> bool:
+	if FileAccess.file_exists(dest):
+		return false
 	return DirAccess.rename_absolute(tmp, dest) == OK
 
 func _discard(file_path: String) -> void:
 	if FileAccess.file_exists(file_path):
 		DirAccess.remove_absolute(file_path)
 
-## Removes unfinished temporary files (a crash mid-write leaves them). Recovery files are never touched.
+## Called after a file is staged and verified, and after it is promoted. Tests use them to interfere at those moments.
+func _after_staged(_dest: String) -> void:
+	pass
+
+func _after_promoted(_dest: String) -> void:
+	pass
+
+## Removes unfinished temporary files left by a process that is no longer running. A temporary file made by a process
+## that is still running (including this one) is never touched. Recovery files and reservations are never touched.
 func cleanup_recovery_temps() -> int:
 	var n := 0
 	var d := DirAccess.open(_recovery_dir())
 	if d != null:
 		for f in d.get_files():
-			if f.begins_with("tmp_") and f.ends_with(".part"):
-				if DirAccess.remove_absolute(_recovery_dir() + "/" + f) == OK:
-					n += 1
+			if not (f.begins_with("tmp_") and f.ends_with(".part")):
+				continue
+			var bits := f.trim_suffix(".part").split("_")
+			var pid := int(bits[bits.size() - 3]) if bits.size() >= 5 else 0
+			if pid > 0 and OS.is_process_running(pid):
+				continue
+			if DirAccess.remove_absolute(_recovery_dir() + "/" + f) == OK:
+				n += 1
 	return n
 
-## Every recovery file, oldest first. The last is the newest.
+## Every recovery file, oldest first. The last is the newest. Unverified copies and temporary files are not listed.
 func recovery_files() -> PackedStringArray:
 	var out := PackedStringArray()
 	var d := DirAccess.open(_recovery_dir())
 	if d != null:
 		for f in d.get_files():
-			if f.length() > 7 and f.substr(0, 6).is_valid_int() and f[6] == "_":
+			if f.length() > 7 and f.substr(0, 6).is_valid_int() and f[6] == "_" and not f.ends_with(".unverified") and not f.ends_with(".part"):
 				out.append(_recovery_dir() + "/" + f)
 	out.sort()
 	return out
 
 ## Before this device's save is replaced: its save file is copied and its progress is also kept in the cloud blob
-## format, as one new generation. True only if every file was written and verified.
+## format, under one reserved generation. True only if both were written and verified.
 func _keep_copy_of_local() -> bool:
-	var gen := _next_generation()
-	if FileAccess.file_exists(Save.path) and not _recovery_put(gen, "local_save_file", "cfg", PackedByteArray(), Save.path):
+	var rec := _recovery_reserve()
+	if rec.is_empty():
 		return false
-	return _recovery_put(gen, "local_progress", "blob", CloudSave.encode(Save.to_dict()))
+	var ok := true
+	if FileAccess.file_exists(Save.path):
+		ok = _recovery_put(rec, "local_save_file", "cfg", PackedByteArray(), Save.path)
+	if ok:
+		ok = _recovery_put(rec, "local_progress", "blob", CloudSave.encode(Save.to_dict()))
+	_recovery_finish(rec)
+	return ok
 
-## Before a cloud save is replaced: exactly the bytes the cloud sent, readable or not, as one new generation.
+## Before a cloud save is replaced: exactly the bytes the cloud sent, readable or not, under one reserved generation.
 func _keep_copy_of_cloud(raw: PackedByteArray) -> bool:
-	return _recovery_put(_next_generation(), "cloud_save", "blob", raw)
+	var rec := _recovery_reserve()
+	var ok := _recovery_put(rec, "cloud_save", "blob", raw)
+	_recovery_finish(rec)
+	return ok
 
-## Keeps every version Google reported, exactly, as one new recovery set. Older files, including those of an earlier
-## conflict, are not touched. Returns {needed, saved, origin, generation, kept, lost}: only verified files count.
+## Keeps every version Google reported, exactly, under one reserved generation. Older files are not touched.
+## Returns {needed, saved, origin, generation, kept, lost}: only verified files count.
 func _preserve_candidates(r: Dictionary) -> Dictionary:
-	var gen := _next_generation()
-	var kept: Array = []
-	var lost: Array = []
-	var n := 0
+	var blobs: Array = []
 	for c in r.get("candidates", []):
 		var bytes: PackedByteArray = c.get("bytes", PackedByteArray())
-		if bytes.is_empty():
-			continue
-		n += 1
-		if _recovery_put(gen, "google_version_%d" % n, "blob", bytes):
-			kept.append(n)
+		if not bytes.is_empty():
+			blobs.append(bytes)
+	var rec := _recovery_reserve() if not blobs.is_empty() else {}
+	var kept: Array = []
+	var lost: Array = []
+	for i in range(blobs.size()):
+		if _recovery_put(rec, "google_version_%d" % (i + 1), "blob", blobs[i]):
+			kept.append(i + 1)
 		else:
-			lost.append(n)
-	return {"needed": n, "saved": kept.size(), "origin": str(r.get("origin", "")), "generation": gen, "kept": kept, "lost": lost}
+			lost.append(i + 1)
+	_recovery_finish(rec)
+	return {"needed": blobs.size(), "saved": kept.size(), "origin": str(r.get("origin", "")), "generation": int(rec.get("gen", 0)), "kept": kept, "lost": lost}
 
 ## What the player is told about a conflict. It claims only what was actually written.
 func _conflict_text(info: Dictionary) -> String:
