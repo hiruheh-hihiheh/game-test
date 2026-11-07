@@ -84,6 +84,8 @@ func _run() -> void:
 	await _test_tiers_and_rift()
 	await _test_danger()
 	await _test_glass_ui()
+	await _test_glass_hud()
+	await _test_touch_targets()
 	await _test_expedition()
 	await _test_endless()
 	_reset_progress()
@@ -912,6 +914,300 @@ func _test_glass_ui() -> void:
 	await process_frame
 	save.unlocked = 1
 	print("glass ui ok")
+
+## Every control painted on the main screens and in every combat phase, as {screen, id, rect}.
+func _collect_targets() -> Array:
+	var out: Array = []
+	save.unlocked = 30
+	save.pilot_xp = 3000
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 21
+	for i in range(8):
+		save.add_gear(gear_db.roll_item(rng, 12.0 + float(i), 1.0, 0, 3))
+	var menu = load("res://title_screen.tscn").instantiate()
+	root.add_child(menu)
+	await process_frame
+	var take := func(label: String) -> void:
+		for b in menu.ui._buttons:
+			out.append({"screen": label, "id": str(b.id), "rect": b.rect})
+	var scrolled := func(label: String, positions: Array) -> void:
+		for sc in positions:
+			menu.ui.scroll = float(sc)
+			for i in range(3):
+				await process_frame
+			take.call("%s@%d" % [label, int(sc)])
+		menu.ui.scroll = 0.0
+	menu.go("title")
+	for i in range(4):
+		await process_frame
+	take.call("title")
+	for tab in ["ships", "gear", "lab", "tech", "nova"]:
+		menu.go("hangar")
+		menu.pages.hangar.on_ui("tab_" + tab)
+		for i in range(4):
+			await process_frame
+		await scrolled.call("hangar/" + tab, [0, 500, 1000])
+	for tab in ["today", "awards", "codex", "records"]:
+		menu.go("ops")
+		menu.pages.ops.tab = tab
+		for i in range(4):
+			await process_frame
+		await scrolled.call("ops/" + tab, [0, 600])
+	menu.go("settings")
+	for i in range(4):
+		await process_frame
+	await scrolled.call("settings", [0, 500, 1000, 1500])
+	save.map_sector = 3
+	menu.go("map")
+	for i in range(4):
+		await process_frame
+	take.call("map")
+	menu.pages.map.open_level(23)
+	for i in range(4):
+		await process_frame
+	await scrolled.call("briefing", [0, 500, 1000])
+	menu.go("loadout")
+	for i in range(4):
+		await process_frame
+	await scrolled.call("loadout", [0, 600])
+	menu.go("expedition")
+	for i in range(4):
+		await process_frame
+	take.call("expedition/sectors")
+	load("res://src/meta/expedition.gd").start(1)
+	save.expedition.layer = 1
+	save.expedition.layers[1][0]["type"] = "elite"
+	menu.go("expedition")
+	for i in range(4):
+		await process_frame
+	take.call("expedition/route")
+	menu.pages.expedition._enter(0)
+	for i in range(4):
+		await process_frame
+	await scrolled.call("expedition/contracts", [0, 500])
+	menu.pages.expedition.overlay = "depot"
+	for i in range(3):
+		await process_frame
+	take.call("expedition/depot")
+	menu.pages.expedition.overlay = "signal"
+	menu.pages.expedition.signal_event = load("res://src/meta/expedition.gd").SIGNALS[0]
+	for i in range(3):
+		await process_frame
+	take.call("expedition/signal")
+	menu.pages.expedition.overlay = ""
+	save.expedition = {}
+	menu.queue_free()
+	await process_frame
+
+	# Combat: playing with Nova ready, the upgrade cards, pause, results and defeat.
+	var phases := ["play", "cards", "pause", "results", "defeat"]
+	for which in phases:
+		var game = await _new_game(_level(3))
+		_step(game, 2.4)
+		match which:
+			"play":
+				game.energy = 100.0
+			"cards":
+				game._begin_upgrade()
+				game.phase_t = 2.0
+				game.input_lock = 0.0
+			"pause":
+				game.set_paused(true)
+			"results":
+				game.phase = game.Phase.PLAYING
+				game._level_complete()
+				game.phase_t = 3.0
+			"defeat":
+				game._show_defeat()
+				game.phase_t = 3.0
+		for i in range(4):
+			await process_frame
+		for b in game.ui._buttons:
+			out.append({"screen": "combat/" + which, "id": str(b.id), "rect": b.rect})
+		game.queue_free()
+		await process_frame
+	save.unlocked = 1
+	save.gear = []
+	save.pilot_xp = 0
+	return out
+
+## Touch targets in layout units (the layout is 720 wide on every phone) and what they are on a real device.
+## dp = units * width_dp / 720, and 48 dp is the usual guideline.
+func _test_touch_targets() -> void:
+	var targets: Array = await _collect_targets()
+	var ui_layer = load("res://src/ui_layer.gd")
+	var seen := {}
+	var checked := 0
+	var worst := 999.0
+	var worst_id := ""
+	for t in targets:
+		var r: Rect2 = t.rect
+		if r.size.x < 1.0 or r.size.y < 1.0:
+			continue
+		if r.end.y < 0.0 or r.position.y > 1280.0:
+			continue
+		var key := "%s|%s" % [t.screen, t.id]
+		if seen.has(key):
+			continue
+		seen[key] = true
+		var eff: Rect2 = ui_layer.touch_rect(r)
+		var side := minf(eff.size.x, eff.size.y)
+		checked += 1
+		if side < worst:
+			worst = side
+			worst_id = key
+		check(side >= ui_layer.MIN_TOUCH - 0.01, "touch area of %s is %.0f units (minimum %.0f)" % [key, side, ui_layer.MIN_TOUCH])
+	check(checked > 150, "the touch audit looked at enough controls (%d)" % checked)
+	print("touch targets: %d controls, smallest effective side %.0f units (%s) = %.0f dp on a 411 dp phone, %.0f dp on a 360 dp phone" % [checked, worst, worst_id, worst * 411.0 / 720.0, worst * 360.0 / 720.0])
+	# A touch just outside a small control still reaches it, and never steals from a neighbour.
+	var menu = load("res://title_screen.tscn").instantiate()
+	root.add_child(menu)
+	await process_frame
+	menu.go("settings")
+	for i in range(5):
+		await process_frame
+	var seg: Rect2 = menu.ui.rect_of("set_nova_side:left")
+	var probe := Vector2(seg.get_center().x, seg.end.y + 10.0)
+	var hit: Dictionary = menu.ui._find(probe)
+	check(str(hit.get("id", "")) == "set_nova_side:left", "a touch 10 units under a 54-unit segment still reaches it")
+	var between := Vector2(seg.end.x + 1.0, seg.get_center().y)
+	var other: Dictionary = menu.ui._find(between)
+	check(str(other.get("id", "")) == "set_nova_side:right", "a touch on the neighbouring segment goes to the neighbour")
+	menu.queue_free()
+	await process_frame
+	print("touch targets ok")
+
+## Combat, phase by phase: the glass pieces draw, and every control still does its job when touched.
+func _test_glass_hud() -> void:
+	var touch := func(game, id: String) -> void:
+		var rect: Rect2 = game.ui.rect_of(id)
+		var down := InputEventScreenTouch.new()
+		down.index = 0
+		down.position = rect.get_center()
+		down.pressed = true
+		game.ui._input(down)
+		var up := InputEventScreenTouch.new()
+		up.index = 0
+		up.position = rect.get_center()
+		up.pressed = false
+		game.ui._input(up)
+	var frames := func(n: int) -> void:
+		for i in range(n):
+			await process_frame
+	var game = await _new_game(_level(3))
+	var P = game.Phase
+	_step(game, 2.4)
+	await frames.call(3)
+	check(game.phase == P.PLAYING, "the flight is under way")
+	check(game.ui.rect_of("pause").size.x >= 70.0, "the pause button is drawn and pressable")
+	game.energy = 100.0
+	await frames.call(3)
+	check(game.ui.rect_of("burst").size.x >= 120.0, "the Nova disc is pressable when full")
+	game.energy = 40.0
+	await frames.call(3)
+	check(game.ui.rect_of("burst").size.x == 0.0, "the Nova disc cannot be pressed while charging")
+	# Pause and resume through real touches.
+	await touch.call(game, "pause")
+	check(game.phase == P.PAUSED, "touching pause pauses")
+	await frames.call(3)
+	for id in ["resume", "retry", "music", "sound", "map"]:
+		check(game.ui.rect_of(id).size.y >= 80.0, "pause menu button %s is drawn" % id)
+	check(game.ui.rect_of("resume").end.y < float(game.H) - float(game.inset.y), "the pause menu fits the screen")
+	var music_before: float = float(save.opt.music_volume)
+	game.input_lock = 0.0 # controls ignore touches for a tenth of a second after pausing; wait that out
+	await touch.call(game, "music")
+	check(float(save.opt.music_volume) != music_before, "the music toggle works from the glass pause menu")
+	await touch.call(game, "music")
+	await touch.call(game, "resume")
+	check(game.phase == P.RESUME, "touching resume starts the countdown")
+	await frames.call(3)
+	_step(game, 1.2)
+	check(game.phase == P.PLAYING, "the flight carries on after the countdown")
+	# Module selection.
+	game._begin_upgrade()
+	game.phase_t = 2.0
+	game.input_lock = 0.0
+	await frames.call(4)
+	check(game.phase == P.UPGRADE and game.card_options.size() >= 2, "the upgrade screen opens")
+	for i in range(game.card_options.size()):
+		check(game.ui.rect_of("card%d" % i).size.y >= 150.0, "upgrade card %d is drawn and pressable" % i)
+	var held_before: int = (game.held as Dictionary).size()
+	await touch.call(game, "card0")
+	check(game.card_picked == 0, "touching a card picks it")
+	game.queue_free()
+	await process_frame
+	# Boss encounter.
+	game = await _new_game(_level(10))
+	game.level.waves[0] = []
+	var guard := 0
+	while game.boss == null and guard < 400:
+		game._process(STEP)
+		guard += 1
+	check(game.boss != null, "the boss arrives")
+	_step(game, 2.0)
+	await frames.call(3)
+	check(game.ui.rect_of("pause").size.x >= 70.0, "the pause button is there during the boss fight")
+	game.queue_free()
+	await process_frame
+	# Victory.
+	game = await _new_game(_level(3))
+	_step(game, 2.4)
+	game.phase = game.Phase.PLAYING
+	game._level_complete()
+	game.phase_t = 3.0
+	await frames.call(4)
+	for id in ["next", "retry", "hangar"]:
+		var r: Rect2 = game.ui.rect_of(id)
+		check(r.size.x >= 200.0 and r.end.y <= float(game.H) - float(game.inset.y), "results button %s is drawn inside the screen" % id)
+	game.queue_free()
+	await process_frame
+	# Defeat.
+	game = await _new_game(_level(3))
+	_step(game, 2.4)
+	game._show_defeat()
+	game.phase_t = 3.0
+	await frames.call(4)
+	for id in ["retry", "hangar"]:
+		var r2: Rect2 = game.ui.rect_of(id)
+		check(r2.size.x >= 200.0 and r2.end.y <= float(game.H) - float(game.inset.y), "defeat button %s is drawn inside the screen" % id)
+	game.queue_free()
+	await process_frame
+	# The same screens under each comfort setting.
+	for combo in [[true, false, 1.0, false], [false, true, 1.0, false], [false, false, 1.12, false], [true, true, 1.12, true]]:
+		save.opt.reduced_motion = combo[0]
+		save.opt.reduced_flash = combo[1]
+		save.opt.ui_scale = combo[2]
+		save.opt.colorblind = combo[3]
+		save.apply_display()
+		for which in ["play", "cards", "pause", "results", "defeat"]:
+			game = await _new_game(_level(3))
+			_step(game, 2.4)
+			match which:
+				"cards":
+					game._begin_upgrade()
+					game.phase_t = 2.0
+				"pause":
+					game.set_paused(true)
+				"results":
+					game.phase = game.Phase.PLAYING
+					game._level_complete()
+					game.phase_t = 3.0
+				"defeat":
+					game._show_defeat()
+					game.phase_t = 3.0
+			await frames.call(3)
+			var any := false
+			for b in game.ui._buttons:
+				any = true
+			check(any, "%s screen has controls with motion=%s flashes=%s scale=%.2f" % [which, str(combo[0]), str(combo[1]), combo[2]])
+			game.queue_free()
+			await process_frame
+	save.opt.reduced_motion = false
+	save.opt.reduced_flash = false
+	save.opt.ui_scale = 1.0
+	save.opt.colorblind = false
+	save.apply_display()
+	print("glass hud ok")
 
 func _test_gear_data() -> void:
 	var rng := RandomNumberGenerator.new()

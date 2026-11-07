@@ -23,7 +23,9 @@ const GLASS := Color(0.035, 0.06, 0.14)
 ## in the Hangar and in Settings are made of the same parts.
 enum Kind { INFO, CARD, SELECTED, PRIMARY, DISABLED, REWARD, WARNING }
 
-## Draw the previous flat panels instead. Used to compare drawing cost, never by the game.
+## Draw flat single-layer panels, bars and chips instead of glass, and skip the purely decorative helpers
+## (rule, shine, enter_veil). Used to isolate what the glass layers cost, never by the game. It does not
+## undo layout changes such as the title pad, so a true before/after needs the old commit (see docs/GLASS_UI.md).
 static var classic := false
 
 const LEFT := 0
@@ -79,6 +81,9 @@ static func panel(ci: CanvasItem, rect: Rect2, fill := PANEL, border := Color(CY
 ## bottom, an inner highlight, edge lighting in the accent colour, and brackets on emphasised kinds.
 ## Options: fill, chamfer, border_alpha, glow, lift (brighten), alpha (fade everything), pulse (0..1).
 static func glass(ci: CanvasItem, rect: Rect2, kind: int = Kind.INFO, accent: Color = CYAN, o: Dictionary = {}) -> void:
+	if classic:
+		_flat_glass(ci, rect, kind, accent, o)
+		return
 	var chamfer: int = int(o.get("chamfer", 14))
 	var fade: float = float(o.get("alpha", 1.0))
 	var lift: float = float(o.get("lift", 0.0))
@@ -155,33 +160,76 @@ static func glass(ci: CanvasItem, rect: Rect2, kind: int = Kind.INFO, accent: Co
 	var sheen_tint := Color(0.72, 0.92, 1.0).lerp(accent, 0.3)
 	var top := Color(sheen_tint, sheen * fade)
 	var clear := Color(sheen_tint, 0.0)
+	# Depth is drawn as ONE gradient polygon (sheen at the top, a soft shade at the bottom) and every fine
+	# line as ONE multi-line call. Each separate shape costs a draw call, and the menus have a lot of panels.
+	var shaded := not dis and kind != Kind.INFO and rect.size.y >= 56.0
 	var ct := minf(cut, hh - 1.0)
-	if ct < 1.0:
+	if shaded and ct >= 1.0:
+		var bh := (y1 - y0) * 0.3
+		var shade := Color(0, 0, 0, 0.2 * fade)
+		var none := Color(0, 0, 0, 0.0)
+		var cb := minf(cut, bh - 1.0)
+		if cb >= 1.0:
+			ci.draw_polygon(PackedVector2Array([Vector2(x0 + ct, y0), Vector2(x1 - ct, y0), Vector2(x1, y0 + ct), Vector2(x1, y0 + hh), Vector2(x1, y1 - bh), Vector2(x1, y1 - cb), Vector2(x1 - cb, y1), Vector2(x0 + cb, y1), Vector2(x0, y1 - cb), Vector2(x0, y1 - bh), Vector2(x0, y0 + hh), Vector2(x0, y0 + ct)]), PackedColorArray([top, top, top, clear, none, shade, shade, shade, shade, none, clear, top]))
+		else:
+			ci.draw_polygon(PackedVector2Array([Vector2(x0 + ct, y0), Vector2(x1 - ct, y0), Vector2(x1, y0 + ct), Vector2(x1, y0 + hh), Vector2(x0, y0 + hh), Vector2(x0, y0 + ct)]), PackedColorArray([top, top, top, clear, clear, top]))
+	elif ct < 1.0:
 		ci.draw_polygon(PackedVector2Array([Vector2(x0, y0), Vector2(x1, y0), Vector2(x1, y0 + hh), Vector2(x0, y0 + hh)]), PackedColorArray([top, top, clear, clear]))
 	else:
 		ci.draw_polygon(PackedVector2Array([Vector2(x0 + ct, y0), Vector2(x1 - ct, y0), Vector2(x1, y0 + ct), Vector2(x1, y0 + hh), Vector2(x0, y0 + hh), Vector2(x0, y0 + ct)]), PackedColorArray([top, top, top, clear, clear, top]))
+	var lines := PackedVector2Array()
+	var line_colors := PackedColorArray()
 	if not dis:
-		# The bottom shade and the inner highlight are depth cues for larger, interactive surfaces only.
-		# Plain information panels and small chips skip them, which keeps the draw count down.
-		if kind != Kind.INFO and rect.size.y >= 56.0:
-			var bh := (y1 - y0) * 0.3
-			var shade := Color(0, 0, 0, 0.2 * fade)
-			var none := Color(0, 0, 0, 0.0)
-			var cb := minf(cut, bh - 1.0)
-			if cb < 1.0:
-				ci.draw_polygon(PackedVector2Array([Vector2(x0, y1 - bh), Vector2(x1, y1 - bh), Vector2(x1, y1), Vector2(x0, y1)]), PackedColorArray([none, none, shade, shade]))
-			else:
-				ci.draw_polygon(PackedVector2Array([Vector2(x0, y1 - bh), Vector2(x1, y1 - bh), Vector2(x1, y1 - cb), Vector2(x1 - cb, y1), Vector2(x0 + cb, y1), Vector2(x0, y1 - cb)]), PackedColorArray([none, none, shade, shade, shade, shade]))
-			ci.draw_line(Vector2(x0 + cut, y0 + 1.5), Vector2(x1 - cut, y0 + 1.5), Color(1, 1, 1, 0.09 * fade), 1.0)
+		if shaded:
+			lines.append_array([Vector2(x0 + cut, y0 + 1.5), Vector2(x1 - cut, y0 + 1.5)])
+			line_colors.append(Color(1, 1, 1, 0.09 * fade))
 		var span := (x1 - x0 - cut * 2.0) * (1.0 if (sel or prim or reward or warn) else 0.42)
-		ci.draw_line(Vector2(x0 + cut, y0 - 0.5), Vector2(x0 + cut + span, y0 - 0.5), Color(accent, edge * fade * (0.55 + 0.45 * float(o.get("pulse", 1.0)))), 1.5)
+		lines.append_array([Vector2(x0 + cut, y0 - 0.5), Vector2(x0 + cut + span, y0 - 0.5)])
+		line_colors.append(Color(accent, edge * fade * (0.55 + 0.45 * float(o.get("pulse", 1.0)))))
 	if sel or prim or reward or warn:
 		var arm := minf(14.0, rect.size.y * 0.3)
 		var bracket := Color(accent.lightened(0.3), 0.85 * fade)
-		ci.draw_polyline(PackedVector2Array([Vector2(x0 + 4.0, y0 + cut + arm), Vector2(x0 + 4.0, y0 + cut + 3.0), Vector2(x0 + cut + 3.0, y0 + 4.0), Vector2(x0 + cut + arm, y0 + 4.0)]), bracket, 1.5)
-		ci.draw_polyline(PackedVector2Array([Vector2(x1 - 4.0, y1 - cut - arm), Vector2(x1 - 4.0, y1 - cut - 3.0), Vector2(x1 - cut - 3.0, y1 - 4.0), Vector2(x1 - cut - arm, y1 - 4.0)]), bracket, 1.5)
+		var a1 := Vector2(x0 + 4.0, y0 + cut + arm)
+		var a2 := Vector2(x0 + 4.0, y0 + cut + 3.0)
+		var a3 := Vector2(x0 + cut + 3.0, y0 + 4.0)
+		var a4 := Vector2(x0 + cut + arm, y0 + 4.0)
+		var b1 := Vector2(x1 - 4.0, y1 - cut - arm)
+		var b2 := Vector2(x1 - 4.0, y1 - cut - 3.0)
+		var b3 := Vector2(x1 - cut - 3.0, y1 - 4.0)
+		var b4 := Vector2(x1 - cut - arm, y1 - 4.0)
+		lines.append_array([a1, a2, a2, a3, a3, a4, b1, b2, b2, b3, b3, b4])
+		for k in range(6):
+			line_colors.append(bracket)
+	if not lines.is_empty():
+		ci.draw_multiline_colors(lines, line_colors, 1.5)
 	if warn:
 		ci.draw_rect(Rect2(x0 + 2.0, y0 + rect.size.y * 0.25, 3.0, rect.size.y * 0.5), Color(accent, 0.85 * fade))
+
+## What `classic` draws instead of glass: one flat style box, like the panels before the redesign.
+static func _flat_glass(ci: CanvasItem, rect: Rect2, kind: int, accent: Color, o: Dictionary) -> void:
+	var fill: Color = o.get("fill", PANEL)
+	var width := 2
+	var alpha := 0.42
+	match kind:
+		Kind.PRIMARY:
+			fill = accent.darkened(0.42)
+			alpha = 0.95
+			width = 3
+		Kind.SELECTED, Kind.REWARD, Kind.WARNING:
+			if not o.has("fill"):
+				fill = Color(accent.darkened(0.72), 0.97)
+			alpha = 0.95
+			width = 3
+		Kind.CARD:
+			if not o.has("fill"):
+				fill = Color(accent.darkened(0.72), 0.97)
+			alpha = 0.5
+		Kind.DISABLED:
+			fill = Color(Color(0.42, 0.46, 0.56).darkened(0.72), 0.97)
+			alpha = 0.4
+	if o.has("border_alpha"):
+		alpha = float(o.border_alpha)
+	ci.draw_style_box(box(fill, Color(accent, alpha), int(o.get("chamfer", 14)), width, int(o.get("glow", 0))), rect)
 
 # ---------- Motion and light helpers ----------
 
@@ -208,7 +256,7 @@ static func breathe(period := 2.8, phase := 0.0) -> float:
 
 ## Fades a card in from the dark, staggered by its position. age is seconds since the screen opened.
 static func enter_veil(ci: CanvasItem, rect: Rect2, age: float, index: int) -> void:
-	if not motion_ok():
+	if classic or not motion_ok():
 		return
 	var k := clampf((age - 0.03 - float(index) * 0.045) / 0.24, 0.0, 1.0)
 	if k >= 1.0:
@@ -218,7 +266,7 @@ static func enter_veil(ci: CanvasItem, rect: Rect2, age: float, index: int) -> v
 
 ## One soft band of light that crosses a card once, for rewards and unlocks. progress runs 0 to 1.
 static func shine(ci: CanvasItem, rect: Rect2, progress: float, accent: Color = WHITE) -> void:
-	if progress <= 0.0 or progress >= 1.0 or not flash_ok():
+	if classic or progress <= 0.0 or progress >= 1.0 or not flash_ok():
 		return
 	var half := 34.0
 	var cx := rect.position.x - half + (rect.size.x + half * 2.0) * progress
@@ -239,6 +287,8 @@ static func shine(ci: CanvasItem, rect: Rect2, progress: float, accent: Color = 
 
 ## A fading rule, for dividing a page into groups.
 static func rule(ci: CanvasItem, from: Vector2, to: Vector2, accent: Color, alpha := 0.55) -> void:
+	if classic:
+		return
 	var mid := from.lerp(to, 0.5)
 	ci.draw_polyline_colors(PackedVector2Array([from, mid, to]), PackedColorArray([Color(accent, 0.0), Color(accent, alpha), Color(accent, 0.0)]), 1.5)
 
@@ -248,7 +298,8 @@ static func chip(ci: CanvasItem, pos: Vector2, value: String, size: int, accent:
 	var h := float(size) * 1.75
 	var x := pos.x - (w * 0.5 if align == CENTER else (w if align == RIGHT else 0.0))
 	var r := Rect2(x, pos.y - h * 0.5, w, h)
-	glass(ci, r, Kind.CARD, accent, {"chamfer": int(h * 0.3)})
+	if not classic:
+		glass(ci, r, Kind.CARD, accent, {"chamfer": int(h * 0.3)})
 	text(ci, value, Vector2(x + w * 0.5, pos.y + float(size) * 0.36), size, WHITE, true, CENTER)
 	return r
 
@@ -329,9 +380,11 @@ static func bar(ci: CanvasItem, rect: Rect2, ratio: float, color: Color) -> void
 		if fill < inner.size.x - 2.0:
 			ci.draw_rect(Rect2(inner.position.x + fill - 2.0, inner.position.y, 2.0, inner.size.y), Color(color.lightened(0.55), 0.95))
 	if rect.size.y >= 12.0 and rect.size.x >= 120.0:
+		var ticks := PackedVector2Array()
 		for q in [0.25, 0.5, 0.75]:
 			var tx: float = inner.position.x + inner.size.x * float(q)
-			ci.draw_line(Vector2(tx, inner.position.y), Vector2(tx, inner.end.y), Color(0, 0, 0, 0.3), 1.0)
+			ticks.append_array([Vector2(tx, inner.position.y), Vector2(tx, inner.end.y)])
+		ci.draw_multiline(ticks, Color(0, 0, 0, 0.3), 1.0)
 
 static func glow_tex() -> Texture2D:
 	if _glow == null:

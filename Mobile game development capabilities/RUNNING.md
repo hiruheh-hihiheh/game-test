@@ -75,6 +75,18 @@ Real clicks and drags through the game window:
 & $godot --path . --script tools/input_test.gd -- --test
 ```
 
+Smallest touch targets, in layout units and in dp on a real phone:
+
+```powershell
+& $godot --headless --path . --script tools/touch_audit.gd -- --test
+```
+
+Menu and combat frame cost (needs a window; see `docs/GLASS_UI.md` for how to compare two commits):
+
+```powershell
+& $godot --path . --script tools/drawcost.gd -- --test
+```
+
 Worst-case performance:
 
 ```powershell

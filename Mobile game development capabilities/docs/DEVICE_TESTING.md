@@ -59,3 +59,14 @@ Fly a Sector 6 level and its boss with the Effects setting on High.
 ## Difficulty
 
 Have people who didn't make the game play it, and watch them without helping. Note where they get stuck or quit. Turn on **Save balance log on device** to record their results in `user://telemetry.log`.
+
+## Glass interface: what to record on a phone
+
+Nothing about the glass UI has been run on a real device yet (no Android SDK, export templates or phone were available on the development PC). When you can, write down:
+
+- Device model, screen resolution and density, Android version, and the renderer shown in the Godot output (the project uses GL Compatibility).
+- Frame rate in menus (Hangar gear tab and the map are the heaviest), in a busy level, and in a boss fight. Turn on `show_fps` through Godot's Remote debugger, or use `adb shell dumpsys gfxinfo com.starfall.salvage framestats`.
+- Whether Settings segments, Gear filter chips and tabs are easy to hit with a thumb. They are drawn 54 to 62 units tall and rely on a 84-unit touch margin.
+- Any clipping at the notch, rounded corners or navigation bar, especially the Launch button, the results buttons and the pause menu.
+- Whether the score plate, boss bar or Nova disc ever hide something important.
+- Frame rate again with Reduce motion and Reduce flashes on, and with the interface size set to Large.

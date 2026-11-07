@@ -134,13 +134,36 @@ func rect_of(id: String) -> Rect2:
 func press_amount(id: String) -> float:
 	return float(_press.get(id, 0.0))
 
+## The smallest touch area a control gets, in layout units. The layout is 720 units wide on every phone, so
+## 84 units is 48 dp (about 7.5 mm) on a typical 411 dp phone and 42 dp on a compact 360 dp one. A control
+## drawn smaller keeps its look and gets an invisible margin up to this size.
+const MIN_TOUCH := 84.0
+const SLOP := 6.0
+
+## Where a touch counts for a control: its rectangle, a small slop, and the margin up to MIN_TOUCH.
+static func touch_rect(r: Rect2) -> Rect2:
+	var padded := r.grow(SLOP)
+	var more := Vector2(maxf(0.0, MIN_TOUCH - padded.size.x), maxf(0.0, MIN_TOUCH - padded.size.y)) * 0.5
+	return padded.grow_individual(more.x, more.y, more.x, more.y)
+
+## A touch on a control (plus its slop) always wins, topmost first. A touch that misses every control goes to the
+## nearest one whose enlarged touch area contains it, so a margin never steals a touch from a neighbour.
 func _find(pos: Vector2) -> Dictionary:
 	for i in range(_buttons.size() - 1, -1, -1):
 		var b: Dictionary = _buttons[i]
 		var r: Rect2 = b.rect
-		if r.grow(6.0).has_point(pos):
+		if r.grow(SLOP).has_point(pos):
 			return b
-	return {}
+	var best := {}
+	var best_d := INF
+	for b in _buttons:
+		var r: Rect2 = b.rect
+		if touch_rect(r).has_point(pos):
+			var d := pos.distance_squared_to(r.get_center())
+			if d < best_d:
+				best_d = d
+				best = b
+	return best
 
 func _input(event: InputEvent) -> void:
 	if not input_enabled:

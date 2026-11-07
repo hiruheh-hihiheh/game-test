@@ -128,7 +128,10 @@ func _paint_hud(c: UILayer) -> void:
 	for i in range(int(g.max_hull)):
 		var alive: bool = i < int(g.hull)
 		UI.icon(c, ICON_HULL, Vector2(40.0 + float(i) * 44.0, top + 24.0), 44.0, Color.WHITE if alive else Color(0.3, 0.34, 0.44, 0.5))
-	UI.bar(c, Rect2(20, top + 52.0, 232, 18), float(g.shield) / float(g.max_shield), UI.CYAN)
+	# The shield gauge gives way to the score plate when the screen is narrow (larger interface size).
+	var plate_w := clampf(UI.width_of(_flight_label(), 20) + 60.0, 230.0, W - 360.0)
+	var shield_w := clampf(W * 0.5 - plate_w * 0.5 - 36.0, 150.0, 232.0)
+	UI.bar(c, Rect2(20, top + 52.0, shield_w, 18), float(g.shield) / float(g.max_shield), UI.CYAN)
 	var line_y := top + 96.0
 	if float(g.shield) <= 0.0:
 		UI.text(c, "SHIELD DOWN", Vector2(26, line_y), 18, Color(UI.RED, 0.7 + sin(g.t * 9.0) * 0.3), true)
@@ -138,7 +141,6 @@ func _paint_hud(c: UILayer) -> void:
 		c.draw_rect(Rect2(22, top + 108.0, 180.0 * clampf(float(g.combo_timer) / 2.8, 0.0, 1.0), 4), UI.GOLD)
 	# A faint glass plate behind the score and level name keeps them readable. It stays thin and see-through,
 	# so the battlefield behind it is never hidden.
-	var plate_w := clampf(UI.width_of(_flight_label(), 20) + 60.0, 230.0, W - 360.0)
 	UI.glass(c, Rect2(W * 0.5 - plate_w * 0.5, top + 2.0, plate_w, 82.0), UI.Kind.INFO, UI.CYAN, {"chamfer": 14, "alpha": 0.34})
 	UI.outlined(c, str(int(g.shown_score)), Vector2(W * 0.5, top + 42.0), 42, UI.WHITE, true, UI.CENTER)
 	UI.outlined(c, _flight_label(), Vector2(W * 0.5, top + 72.0), 20, UI.TEXT_DIM, false, UI.CENTER)
