@@ -84,9 +84,8 @@ func kill_part(part: Dictionary, explode := true) -> void:
 	part.alive = false
 	(part.sprite as Sprite2D).visible = false
 	if explode:
-		Audio.play("explode_m")
-		g.fx.boom(part.at, float(part.size) * 1.3, true, 0.5)
-		g.fx.sparks(part.at, 22, UI.ORANGE, 320.0, 0.6, 15.0)
+		CombatAudio.explosion("part")
+		g.fx.explode_part(part.at, float(part.size))
 		g.kick(9.0)
 
 func can_be_hit() -> bool:
@@ -193,12 +192,13 @@ func beam_part(x: float, width: float, from_y: float) -> Dictionary:
 		return {}
 	return {"part": best, "y": best_y}
 
-## Applies a hit. Returns false when the part stopped the shot cold.
-func take_hit(part: Dictionary, damage: float, at: Vector2) -> bool:
+## Applies a hit. Returns false when the part stopped the shot cold. `wpn` is the weapon that hit, used only for how it looks and sounds.
+func take_hit(part: Dictionary, damage: float, at: Vector2, wpn := "") -> bool:
 	var mult: float = part.mult
+	var power := clampf(damage / 1.1, 0.7, 2.0)
 	if mult <= 0.0 and float(part.own_hp) <= 0.0:
-		g.fx.sparks(at, 2, Color(0.75, 0.8, 0.9), 200.0, 0.18, 8.0)
-		Audio.play("clank", -10.0, 1.0, 0.12)
+		g.fx.impact(at, wpn if wpn != "" else "pulse", 0.8, "shield")
+		CombatAudio.impact(wpn, "shield", 0.8)
 		return false
 	var sp: Sprite2D = part.sprite
 	sp.material = g.hue_mat(0.0, true)
@@ -213,14 +213,15 @@ func take_hit(part: Dictionary, damage: float, at: Vector2) -> bool:
 		g.score += int(2.0 * mult)
 		g.add_energy(0.14)
 		if bool(part.weak):
-			g.fx.sparks(at, 4, UI.GOLD, 260.0, 0.26, 12.0)
+			g.fx.impact(at, wpn if wpn != "" else "pulse", power * 1.4)
+			g.fx.sparks(at, 3, UI.GOLD, 260.0, 0.26, 12.0)
 			Audio.play("crit", -13.0, 1.2, 0.08)
 		elif mult < 0.6:
-			g.fx.sparks(at, 1, Color(0.75, 0.8, 0.9), 160.0, 0.16, 7.0)
-			Audio.play("clank", -14.0, 1.0, 0.12)
+			g.fx.impact(at, wpn if wpn != "" else "pulse", power * 0.7, "shield")
+			CombatAudio.impact(wpn, "shield", power * 0.7)
 		else:
-			g.fx.sparks(at, 2, UI.ORANGE, 220.0, 0.22, 10.0)
-			Audio.play("hit", -13.0, 0.8, 0.1)
+			g.fx.impact(at, wpn if wpn != "" else "pulse", power)
+			CombatAudio.impact(wpn, "hull", power)
 	return true
 
 ## Override: a part with its own health just broke.
@@ -246,9 +247,9 @@ func _apply(damage: float) -> void:
 func _stage_up() -> void:
 	g.kick(10.0)
 	g.do_flash(0.3, UI.ORANGE)
-	Audio.play("explode_m")
+	CombatAudio.explosion("boss_chain")
 	g.fx.ring(pos, 0.6, 60.0, 420.0, UI.ORANGE, 8.0)
-	g.fx.boom(pos, 280.0, true, 0.5)
+	g.fx.explode_part(pos, 280.0)
 	var lines: Array = def.get("stage_lines", ["", ""])
 	g.hud.banner_show("PHASE %d" % (stage + 1), str(lines[stage - 1]), 1.5, UI.ORANGE)
 	g.field.clear_circle(g.player_pos, 300.0)
@@ -278,21 +279,17 @@ func _update_death(dt: float) -> void:
 	if boom_t <= 0.0:
 		boom_t = 0.16
 		var at: Vector2 = pos + Vector2(randf_range(-230.0, 230.0), randf_range(-120.0, 120.0))
-		g.fx.boom(at, randf_range(120.0, 220.0), true, 0.5)
-		g.fx.sparks(at, 14, UI.ORANGE, 300.0, 0.5, 14.0)
-		Audio.play("explode_m", -2.0, 1.0, 0.15)
+		g.fx.boss_blast(at, randf_range(120.0, 220.0))
+		CombatAudio.explosion("boss_chain")
 		g.kick(7.0)
 	if dying <= 0.0:
 		_finish_death()
 
 func _finish_death() -> void:
-	Audio.play("explode_l")
+	CombatAudio.explosion("boss_final")
 	g.do_flash(1.0, Color.WHITE)
 	g.kick(20.0)
-	g.fx.boom(pos, 640.0, true, 1.0)
-	g.fx.ring(pos, 0.9, 80.0, 900.0, UI.ORANGE, 12.0)
-	g.fx.ring(pos, 1.1, 40.0, 700.0, Color.WHITE, 6.0)
-	g.fx.sparks(pos, 90, UI.ORANGE, 560.0, 1.1, 22.0)
+	g.fx.boss_finale(pos, 640.0)
 	for p in parts:
 		if (p.sprite as Sprite2D) != null:
 			g.give_sprite(p.sprite)

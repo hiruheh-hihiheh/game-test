@@ -88,6 +88,7 @@ func _run() -> void:
 	await _test_glass_ui()
 	await _test_pilot_profile()
 	await _test_cloud_save()
+	await _test_combat_polish()
 	await _test_glass_hud()
 	await _test_touch_targets()
 	await _test_expedition()
@@ -3758,6 +3759,480 @@ func _test_cloud_two_processes() -> void:
 	save.remove_recovery(shared)
 	DirAccess.remove_absolute(shared + ".result_A")
 	DirAccess.remove_absolute(shared + ".result_B")
+
+# ---------- Combat polish: explosions, impacts, shields, engines, audio ----------
+
+func _fx_settle(fx, seconds := 6.0) -> void:
+	for i in range(int(seconds / 0.05)):
+		fx.update(0.05)
+
+func _fx_lists(fx) -> Dictionary:
+	return {"booms": fx.booms.size(), "rings": fx.rings.size(), "flashes": fx.flashes.size(), "debris": fx.debris.size(), "ripples": fx.ripples.size(), "bolts": fx.bolts.size()}
+
+func _test_combat_polish() -> void:
+	var FxS = load("res://src/combat/fx.gd")
+	var ShieldS = load("res://src/combat/shield_fx.gd")
+	var EngineS = load("res://src/combat/engine_fx.gd")
+	var AudioS = load("res://src/combat/combat_audio.gd")
+	var Enemies_ = load("res://src/data/enemies.gd")
+	var Ships_ = load("res://src/data/ships.gd")
+	var saved_opt: Dictionary = save.opt.duplicate()
+	var saved_ships: Array = save.owned_ships.duplicate()
+	var saved_ship: String = save.ship
+	var saved_upgrades: Dictionary = save.upgrades.duplicate()
+	save.upgrades = {}
+	save.opt.particles = 2
+	save.opt.reduced_flash = false
+	save.opt.reduced_motion = false
+
+	# --- The effect tables are complete ---
+	for tier in FxS.TIERS:
+		var t: Dictionary = FxS.TIERS[tier]
+		check(t.has_all(["flash", "burst", "life", "ring", "sparks", "debris", "speed", "stages", "kick"]) and (t.ring as Array).size() == 5, "explosion tier %s is fully described" % tier)
+	for w in Ships_.WEAPONS:
+		check(FxS.IMPACTS.has(w), "weapon %s has its own impact look" % w)
+	check(FxS.IMPACTS.has("arc"), "arcs have an impact look")
+	for pal in FxS.PALETTES:
+		check((FxS.PALETTES[pal] as Dictionary).has_all(["core", "hot", "mid", "debris"]), "palette %s is complete" % pal)
+	for kind in Enemies_.DB:
+		var info: Dictionary = Enemies_.DB[kind]
+		var tier_name: String = FxS.tier_for(bool(info.get("heavy", false)), float(info.size))
+		check(FxS.TIERS.has(tier_name), "enemy %s maps to an explosion tier (%s)" % [kind, tier_name])
+		if bool(info.get("heavy", false)):
+			check(tier_name == "heavy", "heavy enemy %s gets the heavy explosion" % kind)
+	check(FxS.tier_for(false, 60.0) == "small" and FxS.tier_for(false, 130.0) == "medium", "small and medium enemies are told apart by size")
+
+	# --- An explosion has all five layers, and bigger ones are bigger ---
+	var fx = FxS.new()
+	fx.density = 1.0
+	var counts := {}
+	for tier in ["small", "medium", "heavy"]:
+		fx = FxS.new()
+		fx.density = 1.0
+		fx.explode(Vector2(300, 300), tier, 120.0, "fire")
+		counts[tier] = {"sparks": fx.spark_count, "debris": fx.debris.size(), "booms": fx.booms.size()}
+		check(fx.flashes.size() >= 1 and fx.booms.size() >= 1 and fx.rings.size() >= 1 and fx.spark_count > 0 and fx.debris.size() > 0, "a %s explosion has a flash, a burst, a ring, sparks and debris" % tier)
+	check(int(counts.small.sparks) < int(counts.medium.sparks) and int(counts.medium.sparks) < int(counts.heavy.sparks), "bigger enemies throw more sparks (%s)" % str(counts))
+	check(int(counts.small.debris) < int(counts.heavy.debris), "and more debris")
+	fx = FxS.new()
+	fx.density = 1.0
+	fx.explode(Vector2(300, 300), "heavy", 200.0, "fire")
+	var first_booms: int = fx.booms.size()
+	check(fx._scheduled.size() >= 3, "a heavy explosion is staged: secondary bursts then a final blast")
+	_fx_settle(fx, 0.12)
+	check(fx.booms.size() > first_booms or fx.rings.size() > 1, "the secondary bursts arrive after the first")
+	var sizes := {}
+	for i in range(10):
+		var f2 = FxS.new()
+		f2.explode(Vector2.ZERO, "medium", 100.0, "fire")
+		sizes[snappedf(float((f2.booms[0] as Dictionary).size), 0.1)] = true
+	check(sizes.size() >= 4, "explosions vary: ten medium blasts had %d different sizes" % sizes.size())
+	fx = FxS.new()
+	fx.explode(Vector2(200, 200), "heavy", 200.0, "ice")
+	_fx_settle(fx, 8.0)
+	check(fx.live_count() == 0, "everything an explosion made has expired after a few seconds (%d left)" % fx.live_count())
+
+	# --- Many explosions at once stay inside their caps and still clean up ---
+	fx = FxS.new()
+	fx.density = 1.0
+	for i in range(300):
+		fx.explode(Vector2(randf() * 720.0, randf() * 1280.0), ["small", "medium", "heavy"][i % 3], 150.0, "fire")
+		fx.impact(Vector2(100, 100), "missile", 1.0)
+		fx.shield_break(Vector2(100, 100), 80.0, Color.CYAN)
+	var l := _fx_lists(fx)
+	check(fx.spark_count <= FxS.MAX_SPARKS and l.booms <= FxS.MAX_BOOMS and l.rings <= FxS.MAX_RINGS and l.flashes <= FxS.MAX_FLASHES and l.debris <= FxS.MAX_DEBRIS and fx._scheduled.size() <= FxS.MAX_SCHEDULED, "300 simultaneous explosions stay inside every cap (%s)" % str(l))
+	_fx_settle(fx, 10.0)
+	check(fx.live_count() == 0, "and every effect is gone afterwards (%d left)" % fx.live_count())
+
+	# --- Boss destruction ---
+	fx = FxS.new()
+	fx.density = 1.0
+	fx.boss_finale(Vector2(360, 300), 640.0)
+	_fx_settle(fx, 0.3)
+	check(fx.rings.size() >= 3 and fx.debris.size() >= 10 and fx.booms.size() >= 1, "a boss finale has a big burst, three shockwaves and thrown wreckage")
+	_fx_settle(fx, 8.0)
+	check(fx.live_count() == 0, "and it cleans up")
+
+	# --- Weapon impacts: every weapon has its own look, and heavier ones are bigger ---
+	for w in ["pulse", "twin", "beam", "missile", "scatter"]:
+		fx = FxS.new()
+		fx.density = 1.0
+		fx.impact(Vector2(100, 100), w, 1.0)
+		check(fx.flashes.size() == 1 and fx.spark_count >= 1, "%s impact: a flash and sparks" % w)
+		var has_ring: bool = fx.rings.size() > 0
+		check(has_ring == not (FxS.IMPACTS[w].ring as Array).is_empty(), "%s impact ring matches its look" % w)
+		check((fx.booms.size() > 0) == (float(FxS.IMPACTS[w].boom) > 0.0), "%s impact burst matches its look" % w)
+	var light = FxS.new()
+	var heavy = FxS.new()
+	light.impact(Vector2.ZERO, "pulse", 0.7)
+	heavy.impact(Vector2.ZERO, "pulse", 2.0)
+	check(float((heavy.flashes[0] as Dictionary).size) > float((light.flashes[0] as Dictionary).size) * 1.8, "a heavy hit's flash is clearly larger than a light one's")
+	var shield_hit = FxS.new()
+	shield_hit.impact(Vector2.ZERO, "pulse", 1.0, "shield")
+	var hull_hit = FxS.new()
+	hull_hit.impact(Vector2.ZERO, "pulse", 1.0, "hull")
+	check(((shield_hit.flashes[0] as Dictionary).color as Color) != ((hull_hit.flashes[0] as Dictionary).color as Color), "a hit on a shield looks different from a hit on a hull")
+	fx = FxS.new()
+	for i in range(200):
+		fx.impact(Vector2(i, i), "pulse", 1.0)
+	check(fx.impacts_drawn <= int(FxS.IMPACT_BURST) and fx.impacts_skipped >= 150, "200 impacts in one frame are limited to a burst (%d drawn)" % fx.impacts_drawn)
+	fx.update(0.5)
+	fx.impact(Vector2.ZERO, "pulse", 1.0)
+	check(fx.impacts_drawn > int(FxS.IMPACT_BURST), "and the budget refills with time")
+
+	# --- Accessibility: Reduce Flash and Reduce Motion ---
+	var normal = FxS.new()
+	seed(4242)  # the same random variation for both, so only the setting differs
+	normal.explode(Vector2.ZERO, "heavy", 200.0, "fire")
+	normal.density = 1.0
+	save.opt.reduced_flash = true
+	var soft = FxS.new()
+	seed(4242)
+	soft.explode(Vector2.ZERO, "heavy", 200.0, "fire")
+	check(float((soft.flashes[0] as Dictionary).size) < float((normal.flashes[0] as Dictionary).size) * 0.8 and float(((soft.flashes[0] as Dictionary).color as Color).a) < 0.7, "Reduce Flash makes the core flash smaller and dimmer")
+	var normal_flashes := 0
+	var soft_flashes := 0
+	for pass_i in range(2):
+		var test_fx = FxS.new()
+		save.opt.reduced_flash = pass_i == 1
+		test_fx.explode(Vector2.ZERO, "heavy", 200.0, "fire")
+		_fx_settle(test_fx, 0.8)
+		if pass_i == 0:
+			normal_flashes = test_fx.flashes_made
+		else:
+			soft_flashes = test_fx.flashes_made
+	check(soft_flashes < normal_flashes, "Reduce Flash turns the staged flashes of a heavy explosion into plain bursts (%d vs %d)" % [soft_flashes, normal_flashes])
+	save.opt.reduced_flash = false
+	save.opt.reduced_motion = true
+	var calm_fx = FxS.new()
+	calm_fx.density = 1.0
+	calm_fx.explode(Vector2.ZERO, "heavy", 200.0, "fire")
+	check(calm_fx._scheduled.is_empty() and calm_fx.debris.size() < FxS.TIERS.heavy.debris, "Reduce Motion removes the staged sequence and halves the flying pieces")
+	var calm_break = FxS.new()
+	calm_break.shield_break(Vector2.ZERO, 80.0, Color.CYAN)
+	check(calm_break.bolts.size() <= 1 and calm_break.debris.size() <= 4, "Reduce Motion simplifies a shield break")
+	var calm_boss = FxS.new()
+	calm_boss.boss_finale(Vector2.ZERO, 600.0)
+	_fx_settle(calm_boss, 0.4)
+	check(calm_boss.rings.size() <= 1, "Reduce Motion gives a boss finale one shockwave")
+	save.opt.reduced_motion = false
+
+	# --- Shields: look, wear, break and recovery follow the real shield and never change it ---
+	check(ShieldS.tier_of(1.0) == 0 and ShieldS.tier_of(0.6) == 1 and ShieldS.tier_of(0.3) == 2 and ShieldS.tier_of(0.1) == 3, "shield wear tiers: full, worn, low, critical")
+	fx = FxS.new()
+	var sfx_ = ShieldS.new(fx)
+	check(sfx_.flicker(1.0) == 1.0, "a full shield does not flicker")
+	var dimmed := false
+	for i in range(60):
+		sfx_.update(0.05, Vector2.ZERO, 5.0, 60.0, true, true)
+		if sfx_.flicker(0.08) < 0.9:
+			dimmed = true
+	check(dimmed, "a nearly empty shield flickers")
+	save.opt.reduced_flash = true
+	var steady := true
+	for i in range(60):
+		sfx_.update(0.05, Vector2.ZERO, 5.0, 60.0, true, true)
+		if sfx_.flicker(0.08) != 1.0:
+			steady = false
+	check(steady, "Reduce Flash keeps a worn shield steady, and the broken ring still shows the wear")
+	save.opt.reduced_flash = false
+	fx = FxS.new()
+	sfx_ = ShieldS.new(fx)
+	var power: float = sfx_.on_hit(Vector2(300, 600), Vector2(300, 300), 6.0, 60.0)
+	var ripple_ang := float((fx.ripples[0] as Dictionary).ang)
+	check(fx.ripples.size() == 1 and absf(angle_difference(ripple_ang, -PI * 0.5)) < 0.05, "a shield hit ripples on the side the shot came from")
+	var heavy_power: float = sfx_.on_hit(Vector2(300, 600), Vector2(300, 900), 40.0, 60.0)
+	check(heavy_power > power * 2.0 and absf(angle_difference(float((fx.ripples[1] as Dictionary).ang), PI * 0.5)) < 0.05, "a heavy hit is stronger, and from below ripples at the bottom")
+	var arcs_seen := 0
+	for i in range(80):
+		var before_bolts: int = fx.bolts.size()
+		sfx_.update(0.05, Vector2(300, 600), 4.0, 60.0, true, true)
+		arcs_seen += maxi(0, fx.bolts.size() - before_bolts)
+	check(arcs_seen > 0, "a low shield throws brief electrical arcs")
+	save.opt.reduced_motion = true
+	var calm_arcs := 0
+	var fx_calm = FxS.new()
+	var s_calm = ShieldS.new(fx_calm)
+	for i in range(80):
+		s_calm.update(0.05, Vector2(300, 600), 4.0, 60.0, true, true)
+	calm_arcs = fx_calm.bolts.size()
+	check(calm_arcs == 0, "Reduce Motion removes the arcs")
+	save.opt.reduced_motion = false
+	fx = FxS.new()
+	sfx_ = ShieldS.new(fx)
+	sfx_.update(0.016, Vector2(300, 600), 40.0, 60.0, true, true)
+	sfx_.on_break(Vector2(300, 600))
+	check(sfx_.collapse > 0.0 and fx.rings.size() >= 2 and fx.flashes.size() >= 1, "a shield break bursts, rings out and collapses")
+	var shards := 0
+	for p in fx.debris:
+		if int((p as Dictionary).shape) == 2:
+			shards += 1
+	check(shards >= 6, "and fragments fly outwards (%d)" % shards)
+	sfx_.update(0.1, Vector2(300, 600), 0.0, 60.0, true, true)
+	check(sfx_.collapse_scale() > 1.0 and sfx_.collapse_alpha() > 0.0, "the bubble expands and fades rather than vanishing")
+	var event: String = sfx_.update(0.016, Vector2(300, 600), 8.0, 60.0, true, true)
+	check(event == "up" and sfx_.update(0.016, Vector2(300, 600), 9.0, 60.0, true, true) != "up", "a recovering shield announces itself once")
+	var warned := 0
+	for i in range(140):
+		if sfx_.update(0.05, Vector2(300, 600), 3.0, 60.0, true, true) == "warn":
+			warned += 1
+	check(warned >= 1 and warned <= 3, "a nearly gone shield warns now and then, not constantly (%d in 7 s)" % warned)
+
+	# --- In a real flight: damage is unchanged, and effects follow ---
+	var game = await _new_game(_level(3))
+	_step(game, 2.0)
+	game.invuln = 0.0
+	game.hull = game.max_hull
+	var start_shield: float = game.shield
+	game.hurt_player(10.0, game.player_pos + Vector2(0, -300))
+	check(is_equal_approx(game.shield, start_shield - 10.0) and game.hull == game.max_hull, "a shield hit still removes exactly its damage")
+	check(game.fx.ripples.size() >= 1, "and shows a ripple")
+	game.invuln = 0.0
+	game.hurt_player(game.shield + 5.0, game.player_pos + Vector2(100, -100))
+	check(game.shield == 0.0 and game.hull == game.max_hull and game.tracker.shield_broke and game.shield_fx.collapse > 0.0, "breaking the shield still costs no hull, and it collapses visibly")
+	game.invuln = 0.0
+	game.hurt_player(5.0)
+	check(game.hull == game.max_hull - 1, "the next hit still costs one hull")
+	game.shield = game.max_shield * 0.1
+	game.invuln = 0.0
+	var ratio_before: float = game.shield / game.max_shield
+	_step(game, 3.0)
+	check(game.shield >= game.max_shield * 0.1 * 0.99 and ratio_before > 0.0, "wear effects never lower the shield")
+	# Enemy shields.
+	var shielded: Dictionary = game.spawn_enemy({"kind": "fighter", "mod": "shielded", "pos": Vector2(360, 300), "move": "straight", "vel": Vector2.ZERO})
+	check(float(shielded.eshield_max) > 0.0 and is_equal_approx(float(shielded.eshield), float(shielded.eshield_max)), "a shielded enemy records its full shield")
+	var hp_before: float = shielded.hp
+	var sh_before: float = shielded.eshield
+	game.fx.ripples.clear()
+	game._hit_enemy(shielded, 0.4, shielded.pos + Vector2(0, 30), false, false, "pulse")
+	check(is_equal_approx(float(shielded.eshield), sh_before - 0.4) and float(shielded.hp) == hp_before and game.fx.ripples.size() == 1, "a shot into an enemy shield removes exactly its damage and ripples")
+	game._hit_enemy(shielded, 9.0, shielded.pos, false, false, "missile")
+	check(float(shielded.eshield) <= 0.0 and game.fx.rings.size() >= 2, "an enemy shield breaks with a burst")
+	var plain: Dictionary = game.spawn_enemy({"kind": "fighter", "pos": Vector2(200, 300), "move": "straight", "vel": Vector2.ZERO})
+	check(float(plain.eshield) == 0.0 and float(plain.eshield_max) == 0.0, "enemies without a shield do not get one")
+	var hp0: float = plain.hp
+	game._hit_enemy(plain, 0.5, plain.pos, false, false, "twin")
+	check(is_equal_approx(float(plain.hp), hp0 - 0.5), "a hull hit still removes exactly its damage")
+
+	# --- Every kind of enemy dies with an explosion, and dying together stays bounded ---
+	game.fx.update(20.0)
+	for kind in Enemies_.DB:
+		if kind == "ally":
+			continue
+		var e: Dictionary = game.spawn_enemy({"kind": kind, "pos": Vector2(360, 400), "move": "straight", "vel": Vector2.ZERO})
+		game.fx.booms.clear()
+		game.fx.flashes.clear()
+		game._kill_enemy(e, true)
+		check(game.fx.flashes.size() + game.fx.booms.size() > 0, "%s explodes" % kind)
+	game.fx.update(20.0)
+	for i in range(30):
+		game.spawn_enemy({"kind": ["gunship", "frigate", "fighter", "elite", "rock_l"][i % 5], "pos": Vector2(randf() * 600.0 + 60.0, randf() * 500.0 + 100.0), "move": "straight", "vel": Vector2.ZERO})
+	for e2 in game.enemies.duplicate():
+		if not e2.dead:
+			game._kill_enemy(e2, true)
+	var lists := _fx_lists(game.fx)
+	check(game.fx.spark_count <= FxS.MAX_SPARKS and lists.booms <= FxS.MAX_BOOMS and lists.rings <= FxS.MAX_RINGS and lists.debris <= FxS.MAX_DEBRIS and game.fx.flashes.size() <= FxS.MAX_FLASHES, "thirty enemies dying at once stay inside the effect caps (%s)" % str(lists))
+	_fx_settle(game.fx, 12.0)
+	check(game.fx.live_count() == 0, "and nothing accumulates afterwards (%d left)" % game.fx.live_count())
+	game.queue_free()
+	await process_frame
+
+	# --- Shots carry their weapon, and every ship's weapon hits with its own effect ---
+	for id in Ships_.ORDER:
+		save.ship = id
+		save.owned_ships = Ships_.ORDER.duplicate()
+		var g2 = await _new_game(_level(2))
+		_step(g2, 2.5)
+		check(g2.engine_fx.profile == EngineS.PROFILES[id], "%s flies with its own engine profile" % id)
+		var wpn: String = str(Ships_.LIST[id].weapon)
+		var carried := false
+		for b in g2.shots:
+			if str((b as Dictionary).get("wpn", "")) == wpn:
+				carried = true
+		check(carried or wpn == "beam", "%s shots carry their weapon (%s)" % [id, wpn])
+		var target: Dictionary = g2.spawn_enemy({"kind": "gunship", "pos": Vector2(360, 300), "move": "straight", "vel": Vector2.ZERO})
+		g2.fx.update(10.0)
+		g2.fx.flashes.clear()
+		g2.fx._impact_tokens = 14.0
+		var hp_start: float = target.hp
+		g2._hit_enemy(target, 0.9, target.pos, false, false, wpn)
+		check(float(target.hp) == hp_start - 0.9, "%s hit removes exactly its damage" % id)
+		if wpn != "missile":
+			check(g2.fx.flashes.size() >= 1, "%s shows an impact flash" % id)
+		g2.queue_free()
+		await process_frame
+
+	# --- Engines: reusable profiles, driven by real movement ---
+	var glows := {}
+	for id in Ships_.ORDER:
+		check(EngineS.PROFILES.has(id), "%s has an engine profile" % id)
+		glows[str((EngineS.PROFILES[id] as Dictionary).glow)] = true
+	check(glows.size() == Ships_.ORDER.size(), "every ship's engine has its own colour")
+	check(float(EngineS.PROFILES.warden.width) > float(EngineS.PROFILES.nova.width) and float(EngineS.PROFILES.nova.width) > float(EngineS.PROFILES.interceptor.width), "heavy ships have wider exhaust than agile ones")
+	check(float(EngineS.PROFILES.interceptor.length) > float(EngineS.PROFILES.warden.length), "agile ships have longer, narrower exhaust")
+	var engine = EngineS.new()
+	var pos := Vector2(360, 900)
+	for i in range(40):
+		engine.update_motion(1.0 / 60.0, pos, true)
+	var idle: float = engine.intensity()
+	check(engine.speed_k < 0.05 and idle < 0.7, "a ship standing still has a short, calm exhaust (%.2f)" % idle)
+	for i in range(40):
+		pos.x += 5.0
+		engine.update_motion(1.0 / 60.0, pos, true)
+	var cruising: float = engine.intensity()
+	check(cruising > idle + 0.3 and engine.speed_k > 0.3, "moving lengthens it (%.2f)" % cruising)
+	for i in range(40):
+		pos.x += 11.0
+		engine.update_motion(1.0 / 60.0, pos, true)
+	check(engine.intensity() > cruising and engine.speed_k > 0.8, "moving fast lengthens it further (%.2f)" % engine.intensity())
+	check(engine.lateral > 0.3, "and it leans against sideways movement")
+	check(engine._trail.size() > 0 and engine._trail.size() <= EngineS.TRAIL_SLOTS, "fast movement leaves a short trail of at most %d afterimages" % EngineS.TRAIL_SLOTS)
+	for i in range(60):
+		engine.update_motion(1.0 / 60.0, pos, true)
+	check(engine._trail.is_empty() and engine.speed_k < 0.05, "and the trail fades away once the ship stops")
+	var peak_ref: float = engine_peak_reference(EngineS)
+	save.opt.reduced_motion = true
+	var calm_engine = EngineS.new()
+	var cpos := Vector2(360, 900)
+	for i in range(80):
+		cpos.x += 11.0
+		calm_engine.update_motion(1.0 / 60.0, cpos, true)
+	check(calm_engine._trail.is_empty() and calm_engine.intensity() < peak_ref, "Reduce Motion removes the trail and tones the exhaust down")
+	save.opt.reduced_motion = false
+	fx = FxS.new()
+	fx.density = 1.0
+	var slow_engine = EngineS.new()
+	var fast_engine = EngineS.new()
+	var sp := Vector2(360, 900)
+	var fp := Vector2(360, 900)
+	for i in range(30):
+		fp.x += 11.0
+		slow_engine.update_motion(1.0 / 60.0, sp, true)
+		fast_engine.update_motion(1.0 / 60.0, fp, true)
+	var slow_fx = FxS.new()
+	var fast_fx = FxS.new()
+	slow_fx.density = 1.0
+	fast_fx.density = 1.0
+	for i in range(60):
+		slow_engine.emit(1.0 / 60.0, slow_fx, sp, true)
+		fast_engine.emit(1.0 / 60.0, fast_fx, fp, true)
+	check(fast_fx.spark_count > slow_fx.spark_count, "a fast ship streams more exhaust particles (%d vs %d)" % [fast_fx.spark_count, slow_fx.spark_count])
+	var dead_fx = FxS.new()
+	engine.emit(0.5, dead_fx, pos, false)
+	check(dead_fx.spark_count == 0, "a destroyed ship stops emitting")
+
+	# --- Audio: every sound exists, voices are limited and prioritised, music and the SFX volume are respected ---
+	var audio = root.get_node("Audio")
+	for n in audio.SFX_NAMES:
+		check(audio._streams.get(n) != null, "sound %s is loaded" % n)
+	for n in ["shoot", "shoot_twin", "shoot_scatter"]:
+		check(not n in audio.SFX_NAMES and not FileAccess.file_exists("res://assets/audio/sfx/%s.wav" % n), "the retired %s sound is gone" % n)
+	for group in audio.GROUPS:
+		for n in audio.GROUPS[group]:
+			check(n in audio.SFX_NAMES, "%s (voice group %s) is a real sound" % [n, group])
+	for w in AudioS.FIRE:
+		check(audio._streams.get(AudioS.FIRE[w].sound) != null, "%s fires with a real sound" % w)
+	for n in ["fire_plasma", "fire_laser", "fire_scatter", "impact_plasma", "impact_laser", "impact_explosive", "impact_heavy", "shield_heavy", "shield_break", "shield_up", "shield_warn", "explode_heavy", "boss_chain", "boss_final"]:
+		var stream: AudioStreamWAV = audio._streams.get(n)
+		check(stream != null and stream.get_length() > 0.05, "new sound %s has content" % n)
+	check(audio._streams.explode_s.get_length() < audio._streams.explode_m.get_length() and audio._streams.explode_m.get_length() < audio._streams.explode_heavy.get_length() and audio._streams.explode_heavy.get_length() < audio._streams.boss_final.get_length(), "explosions get longer from small to boss")
+	check(audio._streams.shield_break.get_length() > audio._streams.shield_hit.get_length(), "the shield break is longer than a shield hit")
+	check(int(audio.PRIORITY.boss_final) > int(audio.PRIORITY.explode_heavy) and int(audio.PRIORITY.explode_heavy) > int(audio.PRIORITY.explode_s) and int(audio.PRIORITY.shield_break) > int(audio.PRIORITY.shield_hit) and int(audio.PRIORITY.hull_hit) > int(audio.PRIORITY.impact_plasma), "important sounds outrank routine ones")
+	var sfx_bus: int = AudioServer.get_bus_index("SFX")
+	var limited := false
+	for i in range(AudioServer.get_bus_effect_count(sfx_bus)):
+		if "Limiter" in AudioServer.get_bus_effect(sfx_bus, i).get_class():
+			limited = true
+	check(limited, "the SFX bus ends in a limiter, so it cannot clip")
+	# Voice limits: flood the impact group with sounds that are not throttled against each other.
+	audio._last.clear()
+	for i in range(40):
+		audio._last.clear()
+		audio.play(["hit", "clank", "impact_plasma", "impact_laser", "impact_explosive", "crit"][i % 6], -30.0)
+	var impact_voices := 0
+	for i in range(audio.POOL_SIZE):
+		if audio._pool[i].playing and audio._pool_group[i] == "impact":
+			impact_voices += 1
+	check(impact_voices <= int(audio.GROUP_LIMIT.impact), "forty impact sounds in a row use at most %d voices (%d)" % [audio.GROUP_LIMIT.impact, impact_voices])
+	audio._last.clear()
+	audio.play("boss_final", -30.0)
+	var boss_voice := false
+	for i in range(audio.POOL_SIZE):
+		if audio._pool[i].playing and audio._pool_group[i] == "explosion" and audio._pool[i].stream == audio._streams.boss_final:
+			boss_voice = true
+	check(boss_voice, "a boss explosion always gets a voice")
+	for i in range(audio.POOL_SIZE):
+		audio._pool[i].stop()
+	# The player's volume settings still rule, and ducking comes back by itself.
+	save.opt.music_volume = 0.8
+	for i in range(300):
+		audio._process(0.05)  # let any duck from the explosions above run out first
+	audio.apply_volumes()
+	var base_db: float = AudioServer.get_bus_volume_db(AudioServer.get_bus_index("Music"))
+	audio.duck(6.0, 0.1)
+	check(AudioServer.get_bus_volume_db(AudioServer.get_bus_index("Music")) < base_db - 5.0, "a big blast lowers the music a little")
+	for i in range(80):
+		audio._process(0.05)
+	check(absf(AudioServer.get_bus_volume_db(AudioServer.get_bus_index("Music")) - base_db) < 0.01, "and the music comes back to the player's volume")
+	save.opt.sfx_volume = 0.0
+	audio.apply_volumes()
+	check(AudioServer.get_bus_volume_db(sfx_bus) <= -79.0, "the SFX volume setting still silences every effect")
+	save.opt.sfx_volume = 1.0
+	audio.apply_volumes()
+
+	# --- Boss destruction in a real fight: attacks stop, sub-explosions, a finale ---
+	save.upgrades = {"cannon": 6, "rapid": 6}
+	var bg = await _new_game(_level(10))
+	bg.level.waves[0] = []
+	_step(bg, 2.5)
+	var guard := 0
+	while bg.boss == null and guard < 400:
+		bg.hull = bg.max_hull
+		bg._process(STEP)
+		guard += 1
+	check(bg.boss != null, "a boss to destroy")
+	var guard2 := 0
+	while bg.boss != null and not bg.boss.can_be_hit() and guard2 < 600:
+		bg._process(STEP)
+		guard2 += 1
+	bg.fx.update(20.0)
+	var boss = bg.boss
+	boss._apply(boss.max_hp * 5.0)
+	check(boss.dying > 0.0 and bg.field.count == 0, "destroying a boss stops its attacks and clears its bullets")
+	var blasts := 0
+	var fired := false
+	var guard3 := 0
+	while not boss.dead and guard3 < 900:
+		var b_before: int = bg.fx.booms.size()
+		bg.hull = bg.max_hull
+		bg._process(STEP)
+		blasts += 1 if bg.fx.booms.size() > b_before else 0
+		if bg.field.count != 0 and not boss.dead:
+			fired = true
+		guard3 += 1
+	check(not fired, "a dying boss fires nothing")
+	check(boss.dead and blasts >= 5, "a dying boss has several smaller explosions before the end (%d)" % blasts)
+	_step(bg, 0.4)
+	check(bg.fx.rings.size() >= 3 and bg.fx.debris.size() > 5, "and ends in a large blast with shockwaves and wreckage")
+	_fx_settle(bg.fx, 12.0)
+	check(bg.fx.live_count() == 0, "and it all cleans up")
+	bg.queue_free()
+	await process_frame
+
+	save.opt = saved_opt
+	save.owned_ships = saved_ships
+	save.ship = saved_ship
+	save.upgrades = saved_upgrades
+	print("combat polish ok")
+
+func engine_peak_reference(EngineS) -> float:
+	# What a ship flat out would show with Reduce Motion off: the calm one must be below it.
+	var e = EngineS.new()
+	var p := Vector2(360, 900)
+	for i in range(80):
+		p.x += 11.0
+		e.update_motion(1.0 / 60.0, p, true)
+	return e.intensity()
 
 func _sha(bytes: PackedByteArray) -> String:
 	var ctx := HashingContext.new()

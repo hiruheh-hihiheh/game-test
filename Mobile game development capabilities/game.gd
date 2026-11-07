@@ -100,7 +100,7 @@ var invuln := 0.0
 var shield_idle := 0.0
 var shield_flash := 0.0
 var hull_lost := 0
-var engine_accum := 0.0
+var engine_fx := EngineFx.new()
 var bank_angle := 0.0
 var beam_focus := 0.0
 var beam_tick := 0.0
@@ -129,6 +129,7 @@ var boss = null
 var fallen_bosses: Array = []
 var field := BulletField.new()
 var fx := Fx.new()
+var shield_fx := ShieldFx.new(fx)
 var hazards: Hazards
 var hud: Hud
 var stars_bg: Array = []
@@ -188,6 +189,9 @@ var bullet_batches: Array = []
 var bullet_glow: SpriteBatch
 var bullet_core: SpriteBatch
 var spark_batch: SpriteBatch
+var ring_thin_batch: SpriteBatch
+var ring_thick_batch: SpriteBatch
+var debris_batch: SpriteBatch
 var ui: UILayer
 var materials := {}
 var add_mat: CanvasItemMaterial
@@ -345,6 +349,7 @@ func _build_scene() -> void:
 	missile_batch = _batch(world, LASER_ART, 60, add_mat)
 	player_sprite = Sprite2D.new()
 	player_sprite.texture = Ships.ART[ship_id]
+	engine_fx.set_ship(ship_id)
 	player_sprite.scale = Vector2.ONE * (118.0 / 512.0)
 	var paint: Dictionary = Ships.PAINTS.get(Save.paint_of(ship_id), Ships.PAINTS.stock)
 	if float(paint.hue) != 0.0:
@@ -367,8 +372,11 @@ func _build_scene() -> void:
 	for k in BulletField.KINDS:
 		bullet_batches.append(_batch(world, k.tex, BulletField.MAX))
 	bullet_core = _batch(world, UI.glow_tex(), BulletField.MAX)
-	spark_batch = _batch(world, UI.glow_tex(), Fx.MAX_SPARKS, add_mat)
+	spark_batch = _batch(world, UI.glow_tex(), Fx.BATCH_CAPACITY, add_mat)
+	ring_thin_batch = _batch(world, Fx.ring_tex(false), Fx.MAX_RINGS, add_mat)
+	ring_thick_batch = _batch(world, Fx.ring_tex(true), Fx.MAX_RINGS, add_mat)
 	fx_add = _layer(world, _paint_fx_add, true)
+	debris_batch = _batch(world, Fx.chip_tex(), Fx.MAX_DEBRIS)
 	fx_top = _layer(world, _paint_fx_top)
 	var canvas := CanvasLayer.new()
 	canvas.layer = 5
@@ -554,8 +562,17 @@ func _sync_sprites(dt: float) -> void:
 	var ready_glow := 0.06 + sin(t * 3.0) * 0.015 if shield > 0.0 else 0.0
 	if aegis_t > 0.0:
 		ready_glow = 0.5 + sin(t * 12.0) * 0.1
-	shield_sprite.modulate.a = 0.0 if not player_alive else clampf(ready_glow + shield_flash * 0.75, 0.0, 1.0)
+	# Only the look follows the shield: wear dims and flickers the glow, and a broken shield collapses outwards.
+	var wear := shield_fx.flicker(shield_fx.ratio(shield, max_shield))
+	shield_sprite.scale = Vector2.ONE * (170.0 / 512.0) * shield_fx.collapse_scale()
+	shield_sprite.modulate.a = 0.0 if not player_alive else clampf(ready_glow * wear + shield_flash * 0.75 + shield_fx.collapse_alpha(), 0.0, 1.0)
 	shield_sprite.rotation += dt * 0.5
+	var shield_event := shield_fx.update(dt, player_pos, shield, max_shield, player_alive, phase in COMBAT_PHASES)
+	if shield_event == "up":
+		CombatAudio.shield("up")
+	elif shield_event == "warn":
+		CombatAudio.shield("warn")
+	engine_fx.update_motion(dt, player_pos, player_alive)
 	var drones := int(s.drones)
 	for i in range(drone_sprites.size()):
 		var d: Sprite2D = drone_sprites[i]
@@ -644,15 +661,7 @@ func clamp_target() -> void:
 	player_target.y = clampf(player_target.y, H * 0.42, H - FLOOR_MARGIN - inset.y)
 
 func _emit_engine(dt: float) -> void:
-	if not player_alive:
-		return
-	engine_accum += dt
-	var gap := 0.022 / fx.density
-	while engine_accum > gap:
-		engine_accum -= gap
-		var side := -1.0 if randf() < 0.5 else 1.0
-		var at := player_pos + Vector2(side * randf_range(0.0, 14.0), 50.0)
-		fx.spark(at, Vector2(randf_range(-22.0, 22.0), randf_range(170.0, 300.0)), randf_range(0.14, 0.3), UI.ORANGE if randf() < 0.6 else Color(1.0, 0.9, 0.5), randf_range(5.0, 10.0))
+	engine_fx.emit(dt, fx, player_pos, player_alive)
 
 func shot_power() -> float:
 	var power: float = float(s.dmg_mult)
@@ -712,33 +721,33 @@ func _fire() -> void:
 			for i in range(n):
 				var lane := float(i) - float(n - 1) * 0.5
 				_add_shot(player_pos + Vector2(lane * 20.0, -46.0 + absf(lane) * 12.0), -PI * 0.5 + lane * 0.085, dmg, UI.CYAN, float(weapon.size))
-			Audio.play("shoot", -9.0, 1.0, 0.06)
+			CombatAudio.fire("pulse", n)
 		"twin":
 			var n := 2 + lanes
 			for i in range(n):
 				var lane := float(i) - float(n - 1) * 0.5
 				_add_shot(player_pos + Vector2(lane * 24.0, -34.0), -PI * 0.5 + lane * 0.03, dmg, Color(0.6, 1.0, 0.8), float(weapon.size))
-			Audio.play("shoot_twin", -12.0, 1.0, 0.08)
+			CombatAudio.fire("twin", n)
 		"missile":
 			var n := 2 + lanes
 			for i in range(n):
 				var lane := float(i) - float(n - 1) * 0.5
 				_add_missile(player_pos + Vector2(lane * 30.0, -20.0), -PI * 0.5 + lane * 0.5, dmg)
-			Audio.play("missile", -7.0, 1.0, 0.1)
+			CombatAudio.fire("missile", n)
 		"scatter":
 			var n := 5 + lanes * 2
 			for i in range(n):
 				var lane := float(i) - float(n - 1) * 0.5
 				var b := _add_shot(player_pos + Vector2(lane * 8.0, -40.0), -PI * 0.5 + lane * 0.13 + randf_range(-0.03, 0.03), dmg, UI.GOLD, float(weapon.size))
 				b.life = 0.72
-			Audio.play("shoot_scatter", -7.0, 1.0, 0.08)
+			CombatAudio.fire("scatter", n)
 	fx.spark(player_pos + Vector2(0, -50), Vector2(0, -30), 0.1, UI.CYAN, 18.0)
 
 func _add_shot(at: Vector2, angle: float, damage: float, color: Color, size: float) -> Dictionary:
 	var speed: float = float(weapon.speed) * float(s.shot_speed)
 	if speed <= 0.0:
 		speed = 900.0 * float(s.shot_speed)
-	var b := {"pos": at, "vel": Vector2.from_angle(angle) * speed, "dmg": damage, "pierce": int(s.pierce), "hits": [], "color": color, "size": size, "life": 2.0, "home": false, "bounce": int(s.ricochet), "prism": float(s.prism) > 0.0, "missile": false}
+	var b := {"pos": at, "vel": Vector2.from_angle(angle) * speed, "dmg": damage, "pierce": int(s.pierce), "hits": [], "color": color, "size": size, "life": 2.0, "home": false, "bounce": int(s.ricochet), "prism": float(s.prism) > 0.0, "missile": false, "wpn": str(ship.weapon)}
 	if shots.size() < 220:
 		shots.append(b)
 	return b
@@ -746,7 +755,7 @@ func _add_shot(at: Vector2, angle: float, damage: float, color: Color, size: flo
 func _add_missile(at: Vector2, angle: float, damage: float) -> void:
 	if shots.size() >= 220:
 		return
-	shots.append({"pos": at, "vel": Vector2.from_angle(angle) * 360.0, "dmg": damage, "pierce": 0, "hits": [], "color": UI.ORANGE, "size": 56.0, "life": 2.6, "home": true, "bounce": 0, "prism": false, "missile": true})
+	shots.append({"pos": at, "vel": Vector2.from_angle(angle) * 360.0, "dmg": damage, "pierce": 0, "hits": [], "color": UI.ORANGE, "size": 56.0, "life": 2.6, "home": true, "bounce": 0, "prism": false, "missile": true, "wpn": "missile"})
 
 func _nearest_enemy(from: Vector2, skip: Array, reach := 1e9) -> Dictionary:
 	var best := {}
@@ -791,7 +800,7 @@ func _shot_hits(b: Dictionary) -> bool:
 			if b.missile:
 				_splash(p, b)
 			var dmg := _roll_crit(float(b.dmg), p)
-			if boss == null or not boss.take_hit(part, dmg, p):
+			if boss == null or not boss.take_hit(part, dmg, p, str(b.wpn)):
 				return true
 			_apply_ricochet(b)
 			b.pierce = int(b.pierce) - 1
@@ -805,7 +814,7 @@ func _shot_hits(b: Dictionary) -> bool:
 			if b.missile:
 				_splash(p, b)
 			var dmg := _roll_crit(float(b.dmg), p)
-			_hit_enemy(e, dmg, p, dmg > float(b.dmg))
+			_hit_enemy(e, dmg, p, dmg > float(b.dmg), false, str(b.wpn))
 			if b.prism:
 				_split_prism(b, p)
 			if int(b.bounce) > 0:
@@ -837,9 +846,8 @@ func _split_prism(b: Dictionary, at: Vector2) -> void:
 		c.life = 0.8
 
 func _splash(at: Vector2, b: Dictionary) -> void:
-	fx.boom(at, 90.0, false, 0.22)
-	fx.sparks(at, 5, UI.ORANGE, 170.0, 0.3, 9.0)
-	Audio.play("hit", -9.0, 0.7, 0.1)
+	fx.impact(at, "missile", clampf(float(b.dmg) / 1.1, 0.8, 2.0))
+	CombatAudio.impact("missile", "hull", clampf(float(b.dmg) / 1.1, 0.8, 2.0))
 	for e in enemies:
 		if not e.dead and not e.ghost and not e.ally and not (e.id in b.hits) and at.distance_squared_to(e.pos) < 8100.0:
 			_hit_enemy(e, float(b.dmg) * 0.4, e.pos, false, true)
@@ -896,13 +904,13 @@ func _beam_column(x: float, width: float, dmg: float) -> void:
 		var hit: Dictionary = boss.beam_part(x, width, player_pos.y)
 		if not hit.is_empty():
 			stop = maxf(stop, float(hit.y))
-			boss.take_hit(hit.part, _roll_crit(dmg, Vector2(x, hit.y)), Vector2(x, hit.y))
+			boss.take_hit(hit.part, _roll_crit(dmg, Vector2(x, hit.y)), Vector2(x, hit.y), "beam")
 	beam_top = maxf(beam_top, stop)
 	for e in enemies:
 		if e.dead or e.ghost or e.ally or float(e.pos.y) < stop - 1.0 or float(e.pos.y) > player_pos.y or float(e.pos.y) < -10.0:
 			continue
 		if absf(float(e.pos.x) - x) < float(e.r) + width:
-			_hit_enemy(e, _roll_crit(dmg, e.pos), e.pos, false)
+			_hit_enemy(e, _roll_crit(dmg, e.pos), e.pos, false, false, "beam")
 
 # ---------- Taking damage ----------
 
@@ -916,7 +924,7 @@ func _on_bullet_hit(at: Vector2, damage: float) -> void:
 	if invuln > 0.0:
 		return
 	fx.sparks(at, 6, UI.MAGENTA, 160.0, 0.25, 12.0)
-	hurt_player(damage)
+	hurt_player(damage, at)
 
 func _on_graze(at: Vector2) -> void:
 	Meta.count("graze")
@@ -946,7 +954,7 @@ func _on_bullet_blocked(b: Dictionary, damage: float, at: Vector2) -> void:
 		if float(b.hp) <= 0.0:
 			_kill_enemy(b, false)
 
-func hurt_player(amount: float) -> void:
+func hurt_player(amount: float, from := Vector2.INF) -> void:
 	if invuln > 0.0 or not player_alive or aegis_t > 0.0 or phase not in COMBAT_PHASES:
 		return
 	shield_idle = 0.0
@@ -961,14 +969,16 @@ func hurt_player(amount: float) -> void:
 		shield_flash = 1.0
 		kick(6.0)
 		combo = combo / 2
-		Audio.play("shield_hit", -3.0, 1.0, 0.06)
+		var shield_power := shield_fx.on_hit(player_pos, from, amount, max_shield)
+		CombatAudio.shield("heavy" if shield_power >= 1.3 else "hit")
 		Save.haptic(25)
-		fx.ring(player_pos, 0.3, 40.0, 110.0, UI.CYAN, 5.0)
 		if str(ship.trait) == "BULWARK" or float(s.spike) > 0.0:
 			field.clear_circle(player_pos, 210.0, _soft_pop)
 			fx.ring(player_pos, 0.35, 40.0, 210.0, UI.MINT, 5.0)
 		if shield <= 0.0:
 			tracker.shield_broke = true
+			shield_fx.on_break(player_pos)
+			CombatAudio.shield("break")
 			if Save.upgrade_level("emergency") > 0 and not emergency_used:
 				emergency_used = true
 				shield = max_shield
@@ -1007,9 +1017,8 @@ func _player_destroyed() -> void:
 	player_alive = false
 	time_scale = 0.3
 	kick(20.0)
-	Audio.play("explode_l")
-	fx.boom(player_pos, 340.0, true, 0.9)
-	fx.sparks(player_pos, 60, UI.ORANGE, 420.0, 0.9, 20.0)
+	CombatAudio.explosion("player")
+	fx.explode(player_pos, "heavy", 240.0, "fire")
 	fx.ring(player_pos, 0.6, 40.0, 420.0, UI.ORANGE, 8.0)
 	Audio.stop_music(1.0)
 	after(1.0, _show_defeat)
@@ -1280,7 +1289,7 @@ func spawn_enemy(cfg: Dictionary) -> Dictionary:
 		"hold_y": float(cfg.get("hold_y", 0.0)), "score": info.score, "drop": info.drop,
 		"heavy": info.get("heavy", false), "cover": info.get("cover", false), "volatile": info.get("volatile", false),
 		"ally": info.get("ally", false), "treasure": info.get("treasure", false), "revive": info.get("revive", false) and not cfg.get("revived", false),
-		"phasing": info.get("phase", false), "ghost": false, "mod": mod, "eshield": 0.0, "idle": 0.0, "speed_k": 1.0,
+		"phasing": info.get("phase", false), "ghost": false, "mod": mod, "eshield": 0.0, "eshield_max": 0.0, "idle": 0.0, "speed_k": 1.0,
 		"burn": 0.0, "burn_tick": 0.0, "slow": 0.0, "frozen": 0.0, "hatch": 0.0, "cryo_hits": 0,
 	}
 	next_id += 1
@@ -1294,6 +1303,7 @@ func spawn_enemy(cfg: Dictionary) -> Dictionary:
 	match mod:
 		"shielded":
 			e.eshield = hp * 0.6
+			e.eshield_max = e.eshield
 		"swift":
 			e.speed_k = 1.4
 			e.rate = float(e.rate) * 0.72
@@ -1570,16 +1580,21 @@ func _elite_followup(e: Dictionary) -> void:
 func ebullet(at: Vector2, angle: float, speed: float, kind: int, damage := 24.0) -> void:
 	field.add(at, Vector2.from_angle(angle) * speed, kind, damage)
 
-func _hit_enemy(e: Dictionary, damage: float, at: Vector2, crit_hit: bool, secondary := false) -> void:
+## `wpn` is the weapon that hit ("" for effects like arcs and Nova), used only to choose how the hit looks and sounds.
+func _hit_enemy(e: Dictionary, damage: float, at: Vector2, crit_hit: bool, secondary := false, wpn := "") -> void:
 	if e.dead or e.ghost or e.ally:
 		return
 	e.idle = 0.0
+	var power := clampf(damage / 1.1, 0.7, 2.0) * (1.25 if crit_hit else 1.0)
 	if float(e.eshield) > 0.0:
 		e.eshield -= damage
-		fx.sparks(at, 2, Color(0.5, 0.85, 1.0), 170.0, 0.2, 9.0)
-		Audio.play("clank", -12.0, 1.0, 0.1)
+		if not secondary:
+			fx.ripple(e, float(e.r) * 1.3, at, power, ShieldFx.COLOR)
+			fx.impact(at, wpn if wpn != "" else "pulse", power, "shield")
+			CombatAudio.impact(wpn, "shield", power)
 		if float(e.eshield) <= 0.0:
-			fx.ring(e.pos, 0.3, float(e.r), float(e.r) * 2.0, UI.CYAN, 6.0)
+			fx.shield_break(e.pos, float(e.r) * 1.3, ShieldFx.COLOR)
+			CombatAudio.shield("break")
 		return
 	e.hp -= damage
 	var sprite: Sprite2D = e.sprite
@@ -1598,9 +1613,12 @@ func _hit_enemy(e: Dictionary, damage: float, at: Vector2, crit_hit: bool, secon
 			_arc_from(e.pos, 2, damage)
 	if float(e.hp) <= 0.0:
 		_kill_enemy(e, true)
-	elif not secondary:
-		Audio.play("hit", -12.0, 1.0, 0.1)
-		fx.sparks(at, 3, UI.GOLD if crit_hit else UI.CYAN, 200.0, 0.2, 9.0)
+	elif not secondary and wpn != "missile":
+		# A missile's hit is drawn and heard by its blast (_splash). Everything else shows its own weapon's impact.
+		fx.impact(at, wpn if wpn != "" else "pulse", power)
+		if crit_hit:
+			fx.sparks(at, 3, UI.GOLD, 220.0, 0.2, 9.0)
+		CombatAudio.impact(wpn, "hull", power)
 
 func _kill_enemy(e: Dictionary, by_player: bool) -> void:
 	if e.dead:
@@ -1613,8 +1631,8 @@ func _kill_enemy(e: Dictionary, by_player: bool) -> void:
 	if e.ally:
 		tracker.escort_ok = false
 		hud.coach("The hauler was lost", 2.5)
-		Audio.play("explode_m")
-		fx.boom(pos, size * 1.4, true, 0.6)
+		CombatAudio.explosion("medium", size)
+		fx.explode(pos, "medium", size, "fire")
 		return
 	if by_player:
 		combo += 1
@@ -1667,36 +1685,34 @@ func _kill_enemy(e: Dictionary, by_player: bool) -> void:
 
 func _destruction_fx(e: Dictionary, pos: Vector2, size: float) -> void:
 	var kind: String = e.kind
-	if e.heavy:
-		Audio.play("explode_m")
-		fx.boom(pos, size * 1.6, true, 0.7)
-		fx.ring(pos, 0.5, 30.0, size * 1.4, UI.ORANGE, 7.0)
-		fx.sparks(pos, 34, UI.ORANGE, 380.0, 0.7, 17.0)
-		kick(11.0)
+	var tier := Fx.tier_for(e.heavy, size)
+	var palette := "fire"
+	if kind.begins_with("rock") or kind == "wreck":
+		# Rock breaks into grey chips: keep the rock's own crunch and a smaller burst.
+		palette = "rock"
+		tier = "small" if size < 130.0 else "medium"
+		Audio.play("rock", -6.0, 1.3 - size / 300.0, 0.1)
+	elif kind in ["pod", "swarmlet", "brood"]:
+		palette = "energy"
+		if tier == "heavy":
+			CombatAudio.explosion("heavy", size)
+		else:
+			Audio.play("hatch", -9.0, 1.4, 0.15)
+	elif kind in ["husk", "revenant", "sentinel"]:
+		palette = "ice"
+		Audio.play("ice", -5.0, 1.0, 0.15)
+	else:
+		CombatAudio.explosion(tier, size)
+	fx.explode(pos, tier, size, palette)
+	kick(float(Fx.TIERS[tier].kick))
+	if tier == "heavy":
 		if not Save.opt.reduced_motion:
 			hitstop = 0.05
 		Save.haptic(40)
-	elif kind.begins_with("rock") or kind == "wreck":
-		Audio.play("rock", -6.0, 1.3 - size / 300.0, 0.1)
-		fx.sparks(pos, 12, Color(0.7, 0.72, 0.8), 210.0, 0.4, 11.0)
-		fx.boom(pos, size * 0.8, false, 0.22)
-		kick(2.0)
-	elif kind in ["pod", "swarmlet", "brood"]:
-		Audio.play("hatch", -9.0, 1.4, 0.15)
-		fx.sparks(pos, 10, UI.MAGENTA, 220.0, 0.4, 12.0)
-	elif kind in ["husk", "revenant", "sentinel"]:
-		Audio.play("ice", -5.0, 1.0, 0.15)
-		fx.sparks(pos, 14, Color(0.7, 0.95, 1.0), 260.0, 0.4, 10.0)
-		fx.boom(pos, size * 0.8, false, 0.25)
-	else:
-		Audio.play("explode_s", -5.0, 1.0, 0.12)
-		fx.boom(pos, size * 1.25, size >= 100.0, 0.34)
-		fx.sparks(pos, 12, UI.ORANGE if randf() < 0.5 else Color(1.0, 0.85, 0.5), 240.0, 0.4, 13.0)
-		kick(2.6)
 
 func _explosion(pos: Vector2, radius: float, damage: float, skip_id: int) -> void:
-	Audio.play("explode_m", -2.0, 1.1, 0.1)
-	fx.boom(pos, radius * 1.7, true, 0.45)
+	CombatAudio.explosion("medium", radius)
+	fx.explode(pos, "medium", radius * 1.1, "fire")
 	fx.ring(pos, 0.3, 30.0, radius, UI.ORANGE, 6.0)
 	kick(8.0)
 	for e in enemies:
@@ -2413,6 +2429,8 @@ func _fill_batches() -> void:
 	pickup_batch.commit()
 	pickup_glow.commit()
 	fx.fill_spark_batch(spark_batch)
+	fx.fill_ring_batches(ring_thin_batch, ring_thick_batch)
+	fx.fill_debris_batch(debris_batch)
 
 func _paint_background(c: DrawLayer) -> void:
 	var th := W * 2.0
@@ -2435,11 +2453,13 @@ func _paint_background(c: DrawLayer) -> void:
 func _paint_fx_add(c: DrawLayer) -> void:
 	fx.paint_additive(c)
 	if player_alive and phase != Phase.UPGRADE:
-		var flick := 0.8 + sin(t * 41.0) * 0.2
-		UI.glow(c, player_pos + Vector2(0, 54), 46.0 * flick, Color(1.0, 0.6, 0.2, 0.6))
+		engine_fx.paint(c, player_pos, bank_angle)
+		shield_fx.paint(c, player_pos, shield, max_shield)
 		if beam_active and phase in COMBAT_PHASES:
 			_paint_beam(c)
 	for e in enemies:
+		if not e.dead and float(e.eshield) > 0.0:
+			ShieldFx.paint_enemy(c, e, t)
 		if e.heavy:
 			UI.glow(c, e.pos, float(e.r) * 2.0, Color(UI.MAGENTA, 0.16 + sin(t * 4.0) * 0.05))
 		if float(e.tell) > 0.0:

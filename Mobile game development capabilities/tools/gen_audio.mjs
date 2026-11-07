@@ -47,10 +47,9 @@ const square = (st, key, f, w = 0.5) => { const p = phase(st, key, f); return p 
 const lp = (st, key, x, cut) => { const a = 1 - Math.exp(-2 * Math.PI * cut / SR); st[key] = (st[key] || 0) + a * (x - (st[key] || 0)); return st[key]; };
 const exp = (t, k) => Math.exp(-t * k);
 
-sfx("shoot", 0.11, 0.55, (t, p, s) => {
-  const f = 1500 * Math.pow(0.32, p * 1.4);
-  return (square(s, "a", f, 0.3) * 0.5 + sine(s, "b", f * 0.5) * 0.7) * exp(t, 34) + noise() * 0.08 * exp(t, 120);
-});
+// The old "shoot" and "shoot_scatter" sounds were replaced by fire_plasma and fire_scatter (combat polish below).
+// Their random numbers are still drawn, so every other sound and all the music stay exactly as they were.
+for (let i = 0, n = Math.floor(0.11 * SR); i < n; i++) rnd();
 sfx("enemy_shoot", 0.16, 0.36, (t, p, s) => {
   const f = 620 * Math.pow(0.45, p);
   return (sine(s, "a", f) + saw(s, "b", f * 1.01) * 0.3) * exp(t, 18);
@@ -142,8 +141,8 @@ sfx("laser", 1.0, 0.56, (t, p, s) => {
 sfx("mine", 0.18, 0.38, (t, p, s) => square(s, "a", 1240, 0.5) * exp(t, 15) * 0.6);
 sfx("whoosh", 0.55, 0.26, (t, p, s) => lp(s, "n", noise(), 300 + 5200 * Math.sin(p * Math.PI)) * Math.sin(p * Math.PI));
 
-sfx("shoot_twin", 0.07, 0.4, (t, p, s) => (square(s, "a", 2100 * Math.pow(0.4, p), 0.25) * 0.4 + sine(s, "b", 900 - 400 * p) * 0.6) * exp(t, 48));
-sfx("shoot_scatter", 0.2, 0.62, (t, p, s) => lp(s, "n", noise(), lerp(6200, 700, Math.sqrt(p))) * exp(t, 22) * 1.3 + sine(s, "a", lerp(320, 70, p)) * exp(t, 26));
+// "shoot_twin" is replaced by fire_laser. "shoot_scatter" is replaced by fire_scatter: its random numbers are still drawn.
+for (let i = 0, n = Math.floor(0.2 * SR); i < n; i++) rnd();
 sfx("missile", 0.34, 0.46, (t, p, s) => lp(s, "n", noise(), 1200 + 3800 * p) * Math.sin(p * Math.PI) * 0.9 + saw(s, "a", 180 + 420 * p) * 0.16 * exp(t, 6));
 sfx("beam", 0.13, 0.3, (t, p, s) => (saw(s, "a", 520) * 0.4 + sine(s, "b", 1040) * 0.5 + saw(s, "c", 527) * 0.3) * Math.sin(p * Math.PI));
 sfx("arc", 0.16, 0.42, (t, p, s) => (rnd() > 0.5 ? 1 : -1) * exp(t, 26) * (rnd() > 0.35 ? 1 : 0) * 0.5 + sine(s, "a", 2600 - 1400 * p) * exp(t, 30) * 0.4);
@@ -165,6 +164,85 @@ sfx("evolve", 1.5, 0.66, (t, p, s) => {
 sfx("unlock", 0.9, 0.56, (t, p, s) => {
   const seq = [659, 880, 1109, 1319, 1760], i = Math.min(4, Math.floor(t / 0.09));
   return (sine(s, "a", seq[i]) + sine(s, "b", seq[i] * 2) * 0.3 + sine(s, "c", seq[i] * 3.01) * 0.12) * exp(t - i * 0.09, i === 4 ? 3.4 : 9);
+});
+
+// ---------- Combat polish sounds ----------
+// Weapons, impacts, shields and the explosion hierarchy. They draw from a random stream of their own, so adding or
+// changing one never alters any other sound or any of the music.
+let seed2 = 7001;
+const noise2 = () => { seed2 = (seed2 * 1664525 + 1013904223) >>> 0; return seed2 / 4294967296 * 2 - 1; };
+const hp2 = (st, key, x, cut) => x - lp(st, key, x, cut); // a crude high-pass: what is left above `cut`
+
+// Weapon fire. Each class has its own voice: plasma is a deep discharge, the laser a sharp electrical zap, the
+// scatter gun a heavy cannon thump.
+sfx("fire_plasma", 0.17, 0.58, (t, p, s) => {
+  const f = lerp(520, 130, Math.pow(p, 0.6));
+  const fm = sine(s, "m", f * 1.5) * 0.35;
+  return (sine(s, "a", f * (1 + fm * 0.4)) * 0.9 + sine(s, "b", f * 0.5) * 0.5) * exp(t, 15) + lp(s, "n", noise2(), 2200) * 0.35 * exp(t, 40);
+});
+sfx("fire_laser", 0.1, 0.5, (t, p, s) => {
+  const f = lerp(3400, 1100, Math.pow(p, 0.5));
+  return (saw(s, "a", f) * 0.35 + square(s, "b", f * 1.5, 0.2) * 0.25 + sine(s, "c", f * 0.5) * 0.4) * exp(t, 26) + hp2(s, "h", noise2(), 3000) * 0.3 * exp(t, 90);
+});
+sfx("fire_scatter", 0.26, 0.7, (t, p, s) => {
+  const thump = sine(s, "a", lerp(150, 55, Math.min(1, p * 1.6))) * exp(t, 14);
+  const blast = lp(s, "n", noise2(), lerp(5200, 600, Math.sqrt(p))) * exp(t, 16) * 1.2;
+  return Math.tanh((thump + blast + hp2(s, "h", noise2(), 4000) * 0.3 * exp(t, 80)) * 1.4);
+});
+
+// Weapon impacts on a hull.
+sfx("impact_plasma", 0.12, 0.42, (t, p, s) => sine(s, "a", lerp(900, 320, p)) * exp(t, 28) + lp(s, "n", noise2(), 3500) * 0.5 * exp(t, 50));
+sfx("impact_laser", 0.07, 0.36, (t, p, s) => (sine(s, "a", 2600) + sine(s, "b", 3900) * 0.5) * exp(t, 60) + hp2(s, "h", noise2(), 3500) * 0.4 * exp(t, 110));
+sfx("impact_explosive", 0.34, 0.62, (t, p, s) => {
+  const thump = sine(s, "a", lerp(120, 48, Math.min(1, p * 1.5))) * exp(t, 11);
+  return Math.tanh((thump + lp(s, "n", noise2(), lerp(2800, 300, Math.sqrt(p))) * exp(t, 10) * 1.2) * 1.3);
+});
+sfx("impact_heavy", 0.22, 0.7, (t, p, s) => {
+  const thump = sine(s, "a", lerp(160, 50, p)) * exp(t, 14);
+  return Math.tanh((thump + lp(s, "n", noise2(), 1800) * exp(t, 22) * 0.9) * 1.5);
+});
+
+// Shields: an absorbed hit (shield_hit already exists), a heavy hit, the break, the recovery and the low warning.
+sfx("shield_heavy", 0.5, 0.66, (t, p, s) => {
+  const mod = sine(s, "m", 210) * 300 * exp(t, 7);
+  return sine(s, "a", 420 + mod - 160 * p) * exp(t, 7) + sine(s, "b", 110) * 0.6 * exp(t, 9) + sine(s, "c", 1260) * 0.15 * exp(t, 18);
+});
+sfx("shield_break", 0.75, 0.8, (t, p, s) => {
+  const crack = hp2(s, "h", noise2(), 2600) * exp(t, 25);
+  const sweep = sine(s, "a", lerp(2000, 110, Math.pow(p, 0.5))) * exp(t, 5) * 0.8;
+  const sizzle = lp(s, "n", noise2(), 5200) * sine(s, "r", 90) * exp(t, 6) * 0.6;
+  return Math.tanh((crack + sweep + sizzle) * 1.4);
+});
+sfx("shield_up", 0.55, 0.4, (t, p, s) => {
+  const f = lerp(300, 980, p * p);
+  return (sine(s, "a", f) + sine(s, "b", f * 2.01) * 0.25) * Math.sin(Math.PI * Math.min(1, p * 1.02)) * 0.8;
+});
+sfx("shield_warn", 0.2, 0.3, (t, p, s) => lp(s, "f", square(s, "a", t < 0.09 ? 520 : 390, 0.3), 1800) * (t % 0.1 < 0.085 ? 1 : 0) * exp(t, 5));
+
+// Destruction, from small to boss. explode_s, explode_m and explode_l already exist.
+sfx("explode_heavy", 1.25, 0.9, (t, p, s) => {
+  const roar = lp(s, "n", noise2(), lerp(2400, 90, Math.pow(p, 0.45))) * exp(t, 2.6) * 1.6;
+  const sub = sine(s, "a", lerp(78, 26, Math.min(1, p * 1.4))) * exp(t, 2.4) * 1.1;
+  const crackle = Math.abs(noise2()) > 0.97 ? noise2() * exp(t, 3) * 0.8 : 0;
+  return Math.tanh((roar + sub + crackle) * 1.3);
+});
+sfx("boss_chain", 0.55, 0.8, (t, p, s) => {
+  const body = lp(s, "n", noise2(), lerp(3600, 260, Math.sqrt(p))) * exp(t, 6) * 1.4;
+  const low = sine(s, "a", lerp(140, 44, Math.min(1, p * 1.4))) * exp(t, 8);
+  const ring = (sine(s, "b", 1230) + sine(s, "c", 1870) * 0.6) * exp(t, 18) * 0.16;
+  return Math.tanh((body + low + ring) * 1.3);
+});
+sfx("boss_final", 3.2, 0.95, (t, p, s) => {
+  s.pings = s.pings || [];
+  if (t > 0.5 && t < 2.8 && noise2() > 0.9988) s.pings.push({ t0: t, f: 700 + Math.abs(noise2()) * 2400 });
+  let rain = 0;
+  for (const g of s.pings) rain += Math.sin(2 * Math.PI * g.f * (t - g.t0)) * exp(t - g.t0, 38) * 0.18;
+  s.pings = s.pings.filter((g) => t - g.t0 < 0.2);
+  const crack = hp2(s, "h", noise2(), 2800) * exp(t, 30);
+  const sub = sine(s, "a", lerp(70, 24, Math.min(1, t * 0.8))) * exp(t, 1.2) * 1.2;
+  const rumble = lp(s, "n", noise2(), lerp(900, 70, p)) * exp(t, 1.3) * 1.4;
+  const swell = lp(s, "w", noise2(), 600) * Math.sin(Math.PI * Math.min(1, t / 0.9)) * (t < 0.9 ? 0.5 : 0);
+  return Math.tanh((crack + sub + rumble + rain + swell) * 1.3);
 });
 
 // ---------- Music engine ----------
