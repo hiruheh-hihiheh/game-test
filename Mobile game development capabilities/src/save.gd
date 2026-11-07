@@ -96,10 +96,26 @@ func _exit_tree() -> void:
 	if test_mode:
 		remove_files(path)
 
-## Deletes a save file with its backup and temp copy.
+## Deletes a save file with its backup and temp copy. The cloud recovery folder goes too, so this is only ever used on
+## throwaway test saves. The game never calls it on a real save.
 func remove_files(p: String) -> void:
-	for f in [p, p + ".bak", p + ".tmp", p + ".cloud", p + ".before_cloud", p + ".cloudconflict", p + ".cloudconflict.1", p + ".cloudconflict.2"]:
+	for f in [p, p + ".bak", p + ".tmp", p + ".cloud"]:
 		DirAccess.remove_absolute(f)
+	remove_recovery(p)
+
+func remove_recovery(p: String) -> void:
+	_remove_dir_tree(p + ".recovery")
+
+static func _remove_dir_tree(dir_path: String) -> void:
+	var d := DirAccess.open(dir_path)
+	if d == null:
+		DirAccess.remove_absolute(dir_path)  # not a folder: a stray file of that name
+		return
+	for f in d.get_files():
+		DirAccess.remove_absolute(dir_path + "/" + f)
+	for sub in d.get_directories():
+		_remove_dir_tree(dir_path + "/" + sub)
+	DirAccess.remove_absolute(dir_path)
 
 ## Test saves left behind by runs that crashed. A file whose process is still running is left alone.
 func _remove_stale_test_files() -> void:
@@ -107,19 +123,25 @@ func _remove_stale_test_files() -> void:
 	if dir == null:
 		return
 	var prefix := TEST_PREFIX.get_file()
-	for f in dir.get_files():
+	var names: Array = []
+	names.append_array(dir.get_files())
+	names.append_array(dir.get_directories())
+	for f in names:
 		if not f.begins_with(prefix):
 			continue
 		var pid := 0
-		var stem := f
-		for suffix in [".bak", ".tmp", ".cloud", ".before_cloud", ".cloudconflict", ".cloudconflict.1", ".cloudconflict.2"]:
+		var stem: String = f
+		for suffix in [".bak", ".tmp", ".cloud", ".recovery"]:
 			stem = stem.trim_suffix(suffix)
 		var bits := stem.get_basename().split("_")
 		if bits.size() > 3:
 			pid = int(bits[bits.size() - 1])
 		if pid > 0 and OS.is_process_running(pid):
 			continue
-		DirAccess.remove_absolute("user://" + f)
+		if dir.dir_exists(f):
+			_remove_dir_tree("user://" + f)
+		else:
+			DirAccess.remove_absolute("user://" + f)
 
 static func _copy(v):
 	if v is Dictionary or v is Array:

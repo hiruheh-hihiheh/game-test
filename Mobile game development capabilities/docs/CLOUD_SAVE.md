@@ -56,7 +56,7 @@ The sync record remembers the fingerprints of the last state this device and the
 | New install (no local progress, never synced) and the cloud has a save | Restore it, silently |
 | Cloud empty and this device has progress | Upload |
 | Only this device changed since the last sync | Upload |
-| Only the cloud changed (another device played) | Restore it, after keeping this device's old save in `starfall_save.cfg.before_cloud` |
+| Only the cloud changed (another device played) | Restore it, after keeping this device's old save in the recovery folder (section 7) |
 | Both changed, or never synced and both have progress | Ask the player: CHOOSE A SAVE |
 | This device has no progress but did before (erased) and the cloud has some | Ask. An empty save is never pushed silently, never restored silently. |
 | The cloud save is unreadable and this device has progress | Ask, offering only KEEP THIS DEVICE'S SAVE |
@@ -72,22 +72,42 @@ Every request is asynchronous with a 25 second timeout. Silence becomes OFFLINE,
 
 CHOOSE A SAVE shows both saves (pilot level, salvage, stars, gear, time saved) and two buttons, each with what it does and a second tap to confirm:
 
-- **KEEP THIS DEVICE'S SAVE** uploads this device's progress over the cloud save. The cloud save it replaces is kept in `starfall_save.cfg.cloudconflict`.
-- **RESTORE CLOUD SAVE** replaces this device's progress with the cloud save. This device's save is kept in `starfall_save.cfg.before_cloud` and `.cloudconflict`.
+- **KEEP THIS DEVICE'S SAVE** uploads this device's progress over the cloud save. The cloud save it replaces is kept in the recovery folder first.
+- **RESTORE CLOUD SAVE** replaces this device's progress with the cloud save. This device's save is kept in the recovery folder first.
 
-The kept files are never read by the game and never deleted by it (they are for support or a manual recovery).
+
+### The recovery folder
+
+Every copy that makes a replacement recoverable goes in one folder beside the save: **`starfall_save.cfg.recovery/`** (on Android that is `user://`, the app's private data folder, next to `starfall_save.cfg`; on Windows `%APPDATA%\Godot\app_userdata\<project name>\`). It holds a `README.txt` and files named **`<generation>_<kind>.<ext>`**:
+
+| File | What it is |
+|---|---|
+| `000003_cloud_save.blob` | A cloud save exactly as the cloud sent it, kept before this device's save replaced it. Plain text (JSON), readable or not. |
+| `000004_local_save_file.cfg` | A copy of `starfall_save.cfg`, kept before a cloud save replaced the progress. Rename it to `starfall_save.cfg` (with the game closed) to put it back. |
+| `000004_local_progress.blob` | The same progress in the cloud blob format. |
+| `000005_google_version_1.blob`, `..._2.blob` | The versions Google reported in a snapshot conflict. |
+
+- **Each operation gets the next generation number.** The highest number is the newest recovery set. Files of one operation share a number. A number with fewer files than expected is an attempt that failed part-way; nothing was replaced by it.
+- **Nothing in this folder is ever overwritten, truncated or deleted by the game**, by a later operation or a failed one. Folders grow by a few tens of kilobytes per event, and nothing is pruned automatically.
+- **Do not delete files here until you have recovered what you need**, especially the highest-numbered ones. `tmp_*.part` files are unfinished writes (a crash mid-write leaves them) and are safe to delete. The game removes them itself at start (`Cloud.cleanup_recovery_temps()`), and touches nothing else.
+- To list them in code, `Cloud.recovery_files()` returns every recovery file, oldest first, so the last is the newest.
 
 ### Nothing is replaced until its copy is safe
 
-Every action that replaces data first writes the copy that makes it recoverable, **reads that file back and compares it byte for byte**, and only then proceeds. If a copy cannot be written (the file cannot be opened, the write fails, a write stops short, a copy of the save file fails), nothing is replaced, nothing is bound or recorded, the decision stays open, and the profile shows in red "Could not keep a copy of ... Your saves are unchanged. Free some storage space and try again."
+Every action that replaces data first writes its recovery copy, and only proceeds when that copy is verified:
+
+1. The new bytes are written to a **unique temporary file** (`tmp_<kind>_<time>_<random>.part`) in the recovery folder. The save file is copied the same way.
+2. The write is checked, the file is closed, **read back and compared byte for byte** with what should be there (a copy is compared with its source).
+3. Only then is it **renamed** to its final `<generation>_<kind>.<ext>` name. A file of that name is never replaced.
+4. If any step fails, the temporary file is discarded and every earlier recovery file is exactly as it was. Nothing is replaced, nothing is bound or recorded, the decision stays open, and the profile shows in red "Could not keep a copy of ... Your saves are unchanged, and earlier recovery copies are untouched. Free some storage space and try again."
 
 | Action | Copy made first |
 |---|---|
-| KEEP THIS DEVICE'S SAVE (replaces the cloud snapshot) | The cloud save **exactly as the cloud sent it** (`.cloudconflict`), whether readable, damaged or written by a newer game. It is never re-encoded. |
-| RESTORE CLOUD SAVE, and the silent restores on a new install or after another device played | This device's save file (`.before_cloud`) and its progress in the cloud format (`.cloudconflict`). A silent restore that cannot make them does not happen: SYNC ERROR, retried later. |
-| Account change: USE THIS DEVICE'S SAVE | The new account's cloud save exactly as sent (`.cloudconflict`), readable or not. The account is bound only after it is written. |
-| Account change: LOAD THIS ACCOUNT'S CLOUD SAVE | This device's save, as for RESTORE. The account is bound only after it is written. |
-| Google reports two versions | Each version exactly (`.cloudconflict.1`, `.2`). Old files from an earlier conflict are removed first, and the message states how many were really written: it says "both versions were kept" only if both were. |
+| KEEP THIS DEVICE'S SAVE (replaces the cloud snapshot) | `cloud_save`: the cloud save **exactly as the cloud sent it**, whether readable, damaged or written by a newer game. Never re-encoded. |
+| RESTORE CLOUD SAVE, and the silent restores on a new install or after another device played | `local_save_file` (if the save file exists) and `local_progress`. A silent restore that cannot make them does not happen: SYNC ERROR, retried later. |
+| Account change: USE THIS DEVICE'S SAVE | `cloud_save` of the new account, readable or not. The account is bound only after it is written. |
+| Account change: LOAD THIS ACCOUNT'S CLOUD SAVE | `local_save_file` and `local_progress`, as for RESTORE. The account is bound only after they are written. |
+| Google reports two versions | One new recovery set holding each version exactly (`google_version_1`, `google_version_2`). Older sets are not touched, before or after. If only one is written, that one is kept and the message names which: it says "both versions were kept" only if both were. |
 
 A Google conflict reported while looking at a new account (the probe) is kept the same way and shown on the account screen as CONFLICT. While Google holds two versions for that account, neither USE THIS DEVICE'S SAVE nor LOAD THIS ACCOUNT'S CLOUD SAVE is possible, only PAUSE CLOUD SYNC.
 
@@ -99,8 +119,8 @@ A cloud save belongs to one Google Play Games player. Without knowing which, swi
 - **Uncertain identity means no sync.** If the player id is empty, missing or the check fails, nothing is read or written: the status is SYNC ERROR with "Could not confirm which Google Play Games account is signed in", and it retries on the normal schedule.
 - **First sync with an account** binds this device's record to it. An older record with no account (from before accounts were recorded) is not trusted: its fingerprints are dropped, so two saves with progress produce a question, never a silent upload or restore.
 - **A different account** than the bound one: nothing is uploaded, restored or written. `Cloud` reads the new account's cloud save (read-only apart from creating an empty snapshot, see section 11) and the profile shows ACCOUNT CHANGED with this device's save beside the new account's cloud save and three choices, each confirmed with a second tap where it changes something:
-  - **USE THIS DEVICE'S SAVE** carries this device's save to the new account, replacing whatever it had in the cloud (kept in `.cloudconflict`). Disabled when this device has no progress.
-  - **LOAD THIS ACCOUNT'S CLOUD SAVE** replaces this device's progress with the new account's (this device's save is kept in `.before_cloud` and `.cloudconflict`). Disabled when the account has none or it is unreadable.
+  - **USE THIS DEVICE'S SAVE** carries this device's save to the new account, replacing whatever it had in the cloud (kept first as a `cloud_save` recovery file). Disabled when this device has no progress.
+  - **LOAD THIS ACCOUNT'S CLOUD SAVE** replaces this device's progress with the new account's (this device's save is kept first as `local_save_file` and `local_progress` recovery files). Disabled when the account has none or it is unreadable.
   - **PAUSE CLOUD SYNC** changes nothing and syncs nothing (SYNC PAUSED, with a button to choose again).
   Until the player chooses, neither the local save nor the new account's cloud save is changed, and scheduled syncs, the flight-end sync and the app-resume sync do nothing.
 - **Switching back** to the bound account resumes normal syncing without a question. Signing out and signing in as the same account needs no decision.
@@ -116,7 +136,7 @@ Read from `SnapshotsProxy.kt` in v3.4.0:
 
 What this game does about it, in `cloud_play_games.gd`:
 
-- A conflict from a save **or** a load completes the pending request immediately, exactly once, as a failure of kind `conflict` that carries both snapshots' bytes. `Cloud` writes them to `starfall_save.cfg.cloudconflict.1` and `.2`, leaves the local save and the cloud untouched, and shows SYNC ERROR: "Google Play Games reported two different cloud versions of your save... This build cannot settle that." No timeout wait, no retry timer; Sync Now tries again.
+- A conflict from a save **or** a load completes the pending request immediately, exactly once, as a failure of kind `conflict` that carries both snapshots' bytes. `Cloud` writes them to a new recovery set (`google_version_1`, `google_version_2` in the recovery folder, older sets untouched), leaves the local save and the cloud untouched, and shows SYNC ERROR: "Google Play Games reported two different cloud versions of your save... This build cannot settle that." No timeout wait, no retry timer; Sync Now tries again.
 - A save is only reported as done after the snapshot has been read back and matches what was written. A mismatch is an error ("unverified"). Silence is covered by `Cloud`'s timeout.
 - Callbacks complete exactly once; `abort()` drops them; late answers after a conflict, a timeout or a sign-out are ignored. All of this is tested against the stand-in plugin.
 
@@ -156,12 +176,12 @@ This order is covered by the stand-in plugin in `tools/fake_pgs`, whose client N
 
 ## 11. What is verified and what is not
 
-Executed (quick suite, `-- --test --quick`): **5625 checks, 0 failures** (the count varies by a few between runs, because some tests loop until a state is reached), including every cloud test below, run on Windows with Godot 4.7.2 headless.
+Executed (quick suite, `-- --test --quick`): **5687 checks, 0 failures** (the count varies by a few between runs, because some tests loop until a state is reached), including every cloud test below, run on Windows with Godot 4.7.2 headless.
 
 - Data: every progress key survives encode, decode and restore; settings are untouched; more than twenty kinds of damaged, foreign, newer or invalid blob are refused; older versions are accepted.
 - `has_progress`: each meaningful field alone, the generated data that must not count, and that every `PROGRESS_KEYS` entry is classified.
 - Sync (mock service): new-install restore, guest upload, fast-forward, lower balances restored as they are, erased saves, offline, failed uploads, timeouts, debounce, flight hold, both conflict choices and their kept files, an unreadable or newer cloud save, Google-reported conflicts from a save and from a load (both versions kept, no timeout wait, no overwrite, no timer retry).
-- Data preservation (mock service, and `tools/faulty_cloud_sync.gd`, which makes file operations fail): unreadable (corrupted) and newer-version cloud data followed by KEEP THIS DEVICE'S SAVE keep the exact original bytes; the same during an account switch; a Google conflict while looking at a new account keeps both versions and blocks replacing; stale conflict files are replaced or removed; a backup that cannot be opened (a directory in its place), a write that fails, and a write that stops short each leave the cloud save and local progress untouched and the decision open; restoring when this device's save cannot be backed up (copy failure, open failure, write failure, short write) does nothing, for the conflict choice, the silent new-install restore and the account choice; the message never claims both Google versions were kept when a write failed. Five deliberate breakages of this code each made the suite fail (done by hand, not part of the suite).
+- Data preservation and recovery history (mock service, and `tools/faulty_cloud_sync.gd`, which makes each file step fail): unreadable (corrupted) and newer-version cloud data followed by KEEP THIS DEVICE'S SAVE keep the exact original bytes, as does the same during an account switch; a Google conflict while looking at a new account keeps both versions and blocks replacing; a recovery folder that cannot be made, an open that fails, a write that fails part-way, a write that stops short and a rename that fails each leave the cloud save and local progress untouched and the decision open, with no temporary file left; restoring when this device's save cannot be backed up (copy, open, store, short write, rename) does nothing, for the conflict choice, the silent new-install restore and the account choice; an existing recovery file stays byte-for-byte identical after each failed attempt (A, B), existing Google candidates survive new conflicts whose first, second or both writes fail and the message names exactly what was kept (C), two successful backups leave both generations exact and in order (D), an interrupted write leaves only a `.part` file that cleanup removes without touching any recovery file or the README (E). Eleven deliberate breakages of this code each made the suite fail (done by hand, not part of the suite).
 - Accounts (mock service): A to B with and without a cloud save, each choice and its kept files, pausing, switching back to A, signing out and in as the same account, a switch while a request is pending (late answer ignored), a switch nobody announced, an unknown identity (no sync, nothing recorded), an older sync record without an account.
 - Session cleanup: sign out while a load is pending and while a save is pending, then sign in again; a scheduled retry cancelled by sign-out; a sign-in check that never answers.
 - Plugin adapter (stand-in plugin): availability in six situations, initialize once, clients created after initialization and persistent, sign-in, forced player reload, the snapshot open/save/read-back sequence, a read-back mismatch, conflicts from SAVE and LOAD, exactly-once completion, silence and timeout, late answers, sign-out with a request pending, an empty player id.

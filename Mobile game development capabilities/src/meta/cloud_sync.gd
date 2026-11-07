@@ -76,6 +76,7 @@ func _ready() -> void:
 	_timer.timeout.connect(_on_timer)
 	Save.saved.connect(_on_saved)
 	_load_state()
+	cleanup_recovery_temps()
 	if autostart:
 		use(CloudSave.make_backend())
 
@@ -401,19 +402,86 @@ func _restore_silently(cloud: Dictionary, ch: String) -> void:
 		_fail("backup", "")
 
 func _backup_failed(what: String) -> void:
-	choice_error = "Could not keep a copy of %s on this device, so nothing was replaced. Your saves are unchanged. Free some storage space and try again." % what
+	choice_error = "Could not keep a copy of %s on this device, so nothing was replaced. Your saves are unchanged, and earlier recovery copies are untouched. Free some storage space and try again." % what
 
-## Before this device's save is replaced it is copied to .before_cloud and also kept in the cloud format as
-## .cloudconflict. True only if both were written and read back identical.
-func _keep_copy_of_local() -> bool:
-	var ok := true
-	if FileAccess.file_exists(Save.path):
-		ok = _copy_file(Save.path, Save.path + ".before_cloud")
+# ---------- Recovery copies ----------
+#
+# Every copy that makes a replacement recoverable goes in one folder beside the save, starfall_save.cfg.recovery/.
+# Each operation gets the next generation number and its files are named <generation>_<kind>.<ext>:
+#   cloud_save        a cloud save exactly as the cloud sent it, kept before this device's save replaced it
+#   local_save_file   a copy of starfall_save.cfg, kept before a cloud save replaced the progress
+#   local_progress    the same progress in the cloud blob format
+#   google_version_N  a version Google reported in a snapshot conflict
+# A recovery file is NEVER overwritten and never deleted by the game. A new file is written to a temporary name,
+# read back and compared byte for byte, and only then renamed into place, so a failure at any step leaves every
+# earlier recovery file as it was. Only unfinished temporary files (tmp_*.part) are ever removed.
+
+func _recovery_dir() -> String:
+	return Save.path + ".recovery"
+
+func _ensure_recovery_dir() -> bool:
+	var dir := _recovery_dir()
+	if DirAccess.dir_exists_absolute(dir):
+		return true
+	if DirAccess.make_dir_recursive_absolute(dir) != OK or not DirAccess.dir_exists_absolute(dir):
+		return false
+	_write_readme()
+	return true
+
+func _write_readme() -> void:
+	var text := "Starfall Salvage recovery copies\n\nEach number is one operation. The highest number is the newest.\nDo not delete anything here until you have recovered what you need.\n\ncloud_save        a cloud save, exactly as the cloud sent it, kept before this device's save replaced it\nlocal_save_file   a copy of this device's save file, kept before a cloud save replaced it\nlocal_progress    the same progress as a cloud blob (plain text)\ngoogle_version_N  a version Google reported in a snapshot conflict\n\ntmp_*.part files are unfinished writes and are safe to delete.\n"
+	var tmp := _temp_path("readme")
+	if _write_verified(tmp, text.to_utf8_buffer()) and not FileAccess.file_exists(_recovery_dir() + "/README.txt"):
+		if not _promote(tmp, _recovery_dir() + "/README.txt"):
+			_discard(tmp)
+	else:
+		_discard(tmp)
+
+## The next unused generation number: one more than the highest in the folder.
+func _next_generation() -> int:
+	var top := 0
+	var d := DirAccess.open(_recovery_dir())
+	if d != null:
+		for f in d.get_files():
+			if f.length() > 7 and f.substr(0, 6).is_valid_int() and f[6] == "_":
+				top = maxi(top, int(f.substr(0, 6)))
+	return top + 1
+
+func _temp_path(kind: String) -> String:
+	return "%s/tmp_%s_%d_%d.part" % [_recovery_dir(), kind, Time.get_ticks_usec(), randi() % 1000000]
+
+## Writes one new recovery file: to a temporary name first (from `bytes`, or by copying `source` when it is given),
+## verified byte for byte, then renamed to <generation>_<kind>.<ext>. An existing file is never replaced. On any
+## failure the temporary file is discarded and every earlier file is untouched.
+func _recovery_put(gen: int, kind: String, ext: String, bytes: PackedByteArray, source := "") -> bool:
+	if not _ensure_recovery_dir():
+		return false
+	var dest := "%s/%06d_%s.%s" % [_recovery_dir(), gen, kind, ext]
+	if FileAccess.file_exists(dest):
+		return false
+	var tmp := _temp_path(kind)
+	var ok: bool
+	if source != "":
+		ok = _copy_file(source, tmp)
+		bytes = FileAccess.get_file_as_bytes(source) if ok else PackedByteArray()
+	else:
+		ok = _write_verified(tmp, bytes)
 	if ok:
-		ok = _write_blob(Save.path + ".cloudconflict", CloudSave.encode(Save.to_dict()))
+		ok = _promote(tmp, dest) and FileAccess.get_file_as_bytes(dest) == bytes
+	if not ok:
+		_discard(tmp)
 	return ok
 
-## File access is in these three small functions so tests can make each fail.
+## A temporary file written, closed and read back. True only if it holds exactly `bytes`.
+func _write_verified(file_path: String, bytes: PackedByteArray) -> bool:
+	var f := _open_write(file_path)
+	if f == null:
+		return false
+	var wrote := _store_bytes(f, file_path, bytes)
+	f.close()
+	return wrote and FileAccess.get_file_as_bytes(file_path) == bytes
+
+## File access is in these small functions so tests can make each step fail.
 func _open_write(file_path: String) -> FileAccess:
 	return FileAccess.open(file_path, FileAccess.WRITE)
 
@@ -424,30 +492,64 @@ func _store_bytes(f: FileAccess, _file_path: String, bytes: PackedByteArray) -> 
 func _copy_file(from: String, to: String) -> bool:
 	return DirAccess.copy_absolute(from, to) == OK and FileAccess.get_file_as_bytes(to) == FileAccess.get_file_as_bytes(from)
 
-## Writes a file and reads it back. True only if the file now holds exactly `bytes`.
-func _write_blob(file_path: String, bytes: PackedByteArray) -> bool:
-	var f := _open_write(file_path)
-	if f == null:
-		return false
-	var wrote := _store_bytes(f, file_path, bytes)
-	f.close()
-	return wrote and FileAccess.get_file_as_bytes(file_path) == bytes
+func _promote(tmp: String, dest: String) -> bool:
+	return DirAccess.rename_absolute(tmp, dest) == OK
 
-## Keeps every version Google reported, exactly, in .cloudconflict.1 and .2. Old files from an earlier conflict are
-## removed first so they can never be mistaken for these. Returns {needed, saved}: only written, verified files count.
+func _discard(file_path: String) -> void:
+	if FileAccess.file_exists(file_path):
+		DirAccess.remove_absolute(file_path)
+
+## Removes unfinished temporary files (a crash mid-write leaves them). Recovery files are never touched.
+func cleanup_recovery_temps() -> int:
+	var n := 0
+	var d := DirAccess.open(_recovery_dir())
+	if d != null:
+		for f in d.get_files():
+			if f.begins_with("tmp_") and f.ends_with(".part"):
+				if DirAccess.remove_absolute(_recovery_dir() + "/" + f) == OK:
+					n += 1
+	return n
+
+## Every recovery file, oldest first. The last is the newest.
+func recovery_files() -> PackedStringArray:
+	var out := PackedStringArray()
+	var d := DirAccess.open(_recovery_dir())
+	if d != null:
+		for f in d.get_files():
+			if f.length() > 7 and f.substr(0, 6).is_valid_int() and f[6] == "_":
+				out.append(_recovery_dir() + "/" + f)
+	out.sort()
+	return out
+
+## Before this device's save is replaced: its save file is copied and its progress is also kept in the cloud blob
+## format, as one new generation. True only if every file was written and verified.
+func _keep_copy_of_local() -> bool:
+	var gen := _next_generation()
+	if FileAccess.file_exists(Save.path) and not _recovery_put(gen, "local_save_file", "cfg", PackedByteArray(), Save.path):
+		return false
+	return _recovery_put(gen, "local_progress", "blob", CloudSave.encode(Save.to_dict()))
+
+## Before a cloud save is replaced: exactly the bytes the cloud sent, readable or not, as one new generation.
+func _keep_copy_of_cloud(raw: PackedByteArray) -> bool:
+	return _recovery_put(_next_generation(), "cloud_save", "blob", raw)
+
+## Keeps every version Google reported, exactly, as one new recovery set. Older files, including those of an earlier
+## conflict, are not touched. Returns {needed, saved, origin, generation, kept, lost}: only verified files count.
 func _preserve_candidates(r: Dictionary) -> Dictionary:
-	for suffix in [".cloudconflict.1", ".cloudconflict.2"]:
-		DirAccess.remove_absolute(Save.path + suffix)
-	var needed := 0
-	var saved := 0
+	var gen := _next_generation()
+	var kept: Array = []
+	var lost: Array = []
+	var n := 0
 	for c in r.get("candidates", []):
 		var bytes: PackedByteArray = c.get("bytes", PackedByteArray())
 		if bytes.is_empty():
 			continue
-		needed += 1
-		if needed <= 2 and _write_blob(Save.path + ".cloudconflict.%d" % needed, bytes):
-			saved += 1
-	return {"needed": needed, "saved": saved, "origin": str(r.get("origin", ""))}
+		n += 1
+		if _recovery_put(gen, "google_version_%d" % n, "blob", bytes):
+			kept.append(n)
+		else:
+			lost.append(n)
+	return {"needed": n, "saved": kept.size(), "origin": str(r.get("origin", "")), "generation": gen, "kept": kept, "lost": lost}
 
 ## What the player is told about a conflict. It claims only what was actually written.
 func _conflict_text(info: Dictionary) -> String:
@@ -459,9 +561,14 @@ func _conflict_text(info: Dictionary) -> String:
 	if needed == 0:
 		return head + " No version was returned to keep. Your progress here is untouched."
 	if saved == needed:
-		var kept := "Both versions were" if needed == 2 else ("The version was" if needed == 1 else "The first two versions were")
-		return head + " %s kept on this device, and your progress here is untouched." % kept
-	return head + " Could not keep a copy of %d of the %d versions on this device. Your progress here is untouched." % [needed - saved, needed]
+		var kept := "Both versions were" if needed == 2 else ("The version was" if needed == 1 else "All %d versions were" % needed)
+		return head + " %s kept on this device (recovery set %d), and your progress here is untouched." % [kept, int(info.get("generation", 0))]
+	var names := func(list: Array) -> String:
+		var parts: Array = []
+		for i in list:
+			parts.append("version %d" % int(i))
+		return ", ".join(parts) if not parts.is_empty() else "none"
+	return head + " Could not keep a copy of %d of the %d versions on this device (kept: %s; not kept: %s). Earlier recovery copies and your progress here are untouched." % [needed - saved, needed, names.call(info.get("kept", [])), names.call(info.get("lost", []))]
 
 func _raise_conflict(local: Dictionary, cloud: Dictionary, bad: String, raw: PackedByteArray) -> void:
 	choice_error = ""
@@ -471,12 +578,12 @@ func _raise_conflict(local: Dictionary, cloud: Dictionary, bad: String, raw: Pac
 	conflict_found.emit()
 
 ## The player chose this device's save. The cloud save it replaces, exactly as the cloud sent it, even if it was
-## unreadable, is written to .cloudconflict and read back first. If that fails, nothing is replaced.
+## unreadable, is written to the recovery folder and verified first. If that fails, nothing is replaced.
 func keep_local() -> void:
 	if conflict.is_empty() or busy or not signed_in():
 		return
 	var raw: PackedByteArray = conflict.get("raw_bytes", PackedByteArray())
-	if not raw.is_empty() and not _write_blob(Save.path + ".cloudconflict", raw):
+	if not raw.is_empty() and not _keep_copy_of_cloud(raw):
 		_backup_failed("the cloud save")
 		changed.emit()
 		return
@@ -548,7 +655,7 @@ func _can_choose_account() -> bool:
 	return not account_change.is_empty() and bool(account_change.probed) and not busy and signed_in() and not _pending_account.is_empty()
 
 ## The player chose to carry this device's save over to the new account. What that account had in the cloud, exactly as
-## it was, even if unreadable, is written to .cloudconflict and read back first. If that fails, nothing is replaced and
+## it was, even if unreadable, is written to the recovery folder and verified first. If that fails, nothing is replaced and
 ## the decision stays open. An empty save is never carried over a save that has progress.
 func account_use_local() -> void:
 	if not _can_choose_account() or not bool(account_change.get("replaceable", false)):
@@ -557,7 +664,7 @@ func account_use_local() -> void:
 	if not CloudSave.has_progress(local):
 		return
 	var raw: PackedByteArray = account_change.get("raw_bytes", PackedByteArray())
-	if not raw.is_empty() and not _write_blob(Save.path + ".cloudconflict", raw):
+	if not raw.is_empty() and not _keep_copy_of_cloud(raw):
 		_backup_failed("the new account's cloud save")
 		changed.emit()
 		return
