@@ -9,6 +9,7 @@ extends SceneTree
 
 const STEP := 1.0 / 30.0
 var failures := 0
+var checks_run := 0
 var first := 1
 var last := 60
 var tries := 3
@@ -30,6 +31,7 @@ func _initialize() -> void:
 	_run.call_deferred()
 
 func check(ok: bool, what: String) -> void:
+	checks_run += 1
 	if not ok:
 		failures += 1
 		print("FAIL: ", what)
@@ -93,7 +95,7 @@ func _run() -> void:
 	_reset_progress()
 	if not quick:
 		await _play_campaign()
-	print("RESULT failures=", failures)
+	print("RESULT failures=", failures, " checks=", checks_run)
 	quit(1 if failures > 0 else 0)
 
 func _reset_progress() -> void:
@@ -987,6 +989,19 @@ func _collect_targets() -> Array:
 		await process_frame
 	await scrolled.call("profile/confirm", [0, 400])
 	menu.pages.profile.on_ui("cloud_cancel")
+	# An account change, with the choices and then its confirmation.
+	cloud_mock.set_auth(cloud_lib.Auth.SIGNED_OUT)
+	cloud_mock.set_account("acct-B")
+	cloud_mock.set_blob(cloud_lib.encode(other_side))
+	cloud_mock.set_auth(cloud_lib.Auth.SIGNED_IN)
+	for i in range(30):
+		await process_frame
+	await scrolled.call("profile/account", [0, 400])
+	menu.pages.profile.on_ui("cloud_acct_cloud")
+	for i in range(3):
+		await process_frame
+	await scrolled.call("profile/account-confirm", [0, 400])
+	menu.pages.profile.on_ui("cloud_acct_cancel")
 	cloud_live.use(cloud_plain)
 	cloud_live.forget_state()
 	cloud_live.debounce = cloud_live.DEBOUNCE
@@ -1769,6 +1784,7 @@ func _make_cloud(mock, signed_in := true):
 	cloud.autostart = false
 	cloud.debounce = 0.05
 	cloud.timeout = 1.0
+	cloud.auth_timeout = 0.4
 	root.add_child(cloud)
 	cloud.forget_state()
 	if signed_in:
@@ -1891,6 +1907,7 @@ func _test_cloud_save() -> void:
 		check(save.unlocked == 5 and save.salvage == 70 and save.pilot_xp == 0 and save.gear.is_empty() and save.nova_mode == "pulse", "missing keys come back as a new player's values")
 	save.opt = saved_opt
 	print("cloud data ok")
+	_test_has_progress()
 	await _test_cloud_sync(saved_dict)
 
 func _read_blob(p: String) -> PackedByteArray:
@@ -1915,7 +1932,7 @@ func _test_cloud_sync(original: Dictionary) -> void:
 	check(cloud.last_sync > 0, "and records when it synced")
 	# The state file holds fingerprints and a time. No account data, no tokens.
 	var state := ConfigFile.new()
-	check(state.load(save.path + ".cloud") == OK and state.get_sections() == PackedStringArray(["sync"]) and state.get_section_keys("sync").size() == 3, "the sync record holds only fingerprints and a time")
+	check(state.load(save.path + ".cloud") == OK and state.get_sections() == PackedStringArray(["sync"]) and state.get_section_keys("sync").size() == 4 and str(state.get_value("sync", "account", "")) == CS.account_hash("acct-A") and not "acct-A" in FileAccess.get_file_as_string(save.path + ".cloud"), "the sync record holds fingerprints, a time and a one-way hash of the account, never the id")
 	var save_text := FileAccess.get_file_as_string(save.path)
 	for word in ["oauth", "access_token", "id_token", "bearer", "password"]:
 		check(not word in save_text.to_lower(), "the save file holds no %s" % word)
@@ -1964,13 +1981,33 @@ func _test_cloud_sync(original: Dictionary) -> void:
 	cloud.sync_now()
 	await _cloud_settle(cloud)
 	check(mock.saves == 3 and not cloud.pending, "and then goes through")
-	# --- Google reports a conflict while saving ---
-	save.salvage += 7
-	save.save_data()
-	mock.conflict_flag = true
-	var loads_before: int = mock.loads
-	await _cloud_settle(cloud)
-	check(mock.loads >= loads_before + 2 and cloud.status() == St.SYNCED, "after a reported conflict the cloud is read again before trusting the upload")
+	# --- Google reports two versions of the cloud save, while saving and while loading ---
+	for origin in ["SAVE", "LOAD"]:
+		var other_a: Dictionary = save.to_dict()
+		other_a.salvage = 111
+		var other_b: Dictionary = save.to_dict()
+		other_b.salvage = 222
+		mock.conflict_blobs = [CS.encode(other_a), CS.encode(other_b)]
+		for f in [save.path + ".cloudconflict.1", save.path + ".cloudconflict.2"]:
+			DirAccess.remove_absolute(f)
+		save.salvage += 7
+		save.save_data()
+		var local_conflict: Dictionary = save.to_dict()
+		var blob_before: PackedByteArray = mock.blob.duplicate()
+		mock.conflict_next = origin
+		var started := Time.get_ticks_msec()
+		if origin == "LOAD":
+			cloud.sync_now(true)
+		await _cloud_settle(cloud)
+		check(cloud.status() == St.ERROR and cloud._fail_kind == "conflict" and not cloud.busy, "a %s conflict ends the request as an error" % origin)
+		check(Time.get_ticks_msec() - started < int(cloud.timeout * 1000.0), "and does not wait for the timeout (%s)" % origin)
+		check("two different cloud versions" in cloud.last_error and "untouched" in cloud.last_error, "and says what happened")
+		check(bool(CS.decode(_read_blob(save.path + ".cloudconflict.1")).ok) and int(CS.decode(_read_blob(save.path + ".cloudconflict.2")).data.salvage) == 222 and int(CS.decode(_read_blob(save.path + ".cloudconflict.1")).data.salvage) == 111, "both reported versions are kept as files (%s)" % origin)
+		check(CS.progress_hash(save.to_dict()) == CS.progress_hash(local_conflict) and mock.blob == blob_before, "nothing local or in the cloud was overwritten (%s)" % origin)
+		check(cloud._timer.is_stopped(), "a conflict is not retried on a timer (%s)" % origin)
+		cloud.sync_now(true)
+		await _cloud_settle(cloud)
+		check(cloud.status() == St.SYNCED, "Sync Now tries again and succeeds once the conflict is gone (%s)" % origin)
 	await _free_cloud(cloud)
 	# --- Offline: nothing is lost, and the upload happens later ---
 	_cloud_rich_save()
@@ -2138,6 +2175,9 @@ func _test_cloud_sync(original: Dictionary) -> void:
 	live.sync_now()
 	await process_frame
 	check(not live.busy and CS.progress_hash(save.to_dict()) == CS.progress_hash(before_live), "Sync Now does nothing without a service")
+	await _test_cloud_accounts()
+	await _test_cloud_cleanup()
+	await _test_cloud_plugin()
 	await _test_cloud_profile(rich)
 	# --- Put the test save back ---
 	for f in side_files:
@@ -2276,6 +2316,59 @@ func _test_cloud_profile(rich: Dictionary) -> void:
 		if not C.busy and i > 3:
 			break
 	check(save.salvage == 321 and save.pilot_xp == 5000 and C.status() == St.SYNCED, "confirming Restore brings back the cloud save")
+	# ACCOUNT CHANGED
+	C.forget_state()
+	_cloud_rich_save()
+	_clear_cloud_files()
+	var amock = _cloud_mock_script.new()
+	amock.set_auth(CS.Auth.SIGNED_IN)
+	C.use(amock)
+	for i in range(120):
+		await process_frame
+		if not C.busy and i > 3:
+			break
+	var b_side: Dictionary = save.to_dict()
+	b_side.salvage = 555
+	b_side.pilot_xp = 7000
+	_switch_account(amock, "acct-B")
+	amock.set_blob(CS.encode(b_side))
+	C.sync_now(true)
+	for i in range(120):
+		await process_frame
+		if not C.busy and i > 3:
+			break
+	await open_profile.call()
+	check(C.status() == St.ACCOUNT and seen.call("ACCOUNT CHANGED") and seen.call("USE THIS DEVICE'S SAVE") and seen.call("LOAD THIS ACCOUNT'S CLOUD SAVE") and seen.call("PAUSE CLOUD SYNC"), "a different account shows ACCOUNT CHANGED with its three choices")
+	check(seen.call("THIS DEVICE") and seen.call("NEW ACCOUNT'S CLOUD") and seen.call("12,345 SALVAGE") and seen.call("555 SALVAGE"), "both saves are described with real numbers")
+	check(_shown_has(profile, "Nothing was changed") and _shown_has(profile, "Uploads this device's progress to the new account") and _shown_has(profile, "Replaces this device's progress with the new account's"), "the screen says nothing changed and what each choice will do")
+	check(rect_ok.call("cloud_acct_local") and rect_ok.call("cloud_acct_cloud") and rect_ok.call("cloud_acct_pause"), "all three choices are full-size touch targets")
+	var guard2: Dictionary = save.to_dict()
+	var saves_guard2: int = amock.saves
+	await _press_id(menu.ui, "cloud_acct_cloud")
+	for i in range(4):
+		await process_frame
+	check(seen.call("YES, REPLACE THIS DEVICE'S SAVE") and seen.call("CANCEL") and C.status() == St.ACCOUNT and CS.progress_hash(save.to_dict()) == CS.progress_hash(guard2), "a choice needs a second tap and changes nothing on the first")
+	await _press_id(menu.ui, "cloud_acct_cancel")
+	for i in range(4):
+		await process_frame
+	check(seen.call("PAUSE CLOUD SYNC") and C.status() == St.ACCOUNT, "Cancel goes back to the choices")
+	await _press_id(menu.ui, "cloud_acct_pause")
+	for i in range(4):
+		await process_frame
+	check(seen.call("SYNC PAUSED") and seen.call("CHOOSE WHAT TO DO") and CS.progress_hash(save.to_dict()) == CS.progress_hash(guard2) and amock.saves == saves_guard2, "pausing shows SYNC PAUSED and changes nothing")
+	await _press_id(menu.ui, "cloud_acct_review")
+	for i in range(4):
+		await process_frame
+	check(seen.call("LOAD THIS ACCOUNT'S CLOUD SAVE"), "Choose what to do brings the choices back")
+	await _press_id(menu.ui, "cloud_acct_cloud")
+	for i in range(4):
+		await process_frame
+	await _press_id(menu.ui, "cloud_acct_confirm")
+	for i in range(60):
+		await process_frame
+		if not C.busy and i > 3:
+			break
+	check(save.salvage == 555 and C.status() == St.SYNCED, "confirming loads the new account's cloud save")
 	# Leave the game's own Cloud as a local guest again.
 	menu.queue_free()
 	await process_frame
@@ -2286,6 +2379,586 @@ func _test_cloud_profile(rich: Dictionary) -> void:
 	for f in side_files:
 		DirAccess.remove_absolute(f)
 	print("cloud profile ok")
+
+## Switches the mock to another Google account the way a phone does: signed out, a different player, signed in.
+func _switch_account(mock, id: String) -> void:
+	var CS = _cloud_script_class()
+	mock.set_auth(CS.Auth.SIGNED_OUT)
+	mock.set_account(id)
+	mock.set_auth(CS.Auth.SIGNED_IN)
+
+func _clear_cloud_files() -> void:
+	for suffix in [".cloud", ".before_cloud", ".cloudconflict", ".cloudconflict.1", ".cloudconflict.2"]:
+		DirAccess.remove_absolute(save.path + suffix)
+
+func _blob_hash(bytes: PackedByteArray) -> String:
+	var r: Dictionary = _cloud_script_class().decode(bytes)
+	return _cloud_script_class().progress_hash(r.data) if bool(r.ok) else "unreadable"
+
+func _test_cloud_accounts() -> void:
+	var CS = _cloud_script_class()
+	var St = CS.Status
+	# --- Account A, then account B with no cloud save ---
+	_cloud_rich_save()
+	_clear_cloud_files()
+	var rich: Dictionary = save.to_dict()
+	var mock = _cloud_mock_script.new()
+	var cloud = _make_cloud(mock)
+	await _cloud_settle(cloud)
+	check(cloud.status() == St.SYNCED and mock.saves == 1 and mock.checks >= 1, "account A syncs and uploads")
+	var a_blob: PackedByteArray = mock.blob.duplicate()
+	var rec := FileAccess.get_file_as_string(save.path + ".cloud")
+	check(not "acct-A" in rec and CS.account_hash("acct-A") in rec, "only a hash of the player id is stored")
+	_switch_account(mock, "acct-B")
+	await _cloud_settle(cloud)
+	check(cloud.status() == St.ACCOUNT and cloud.status_label() == "ACCOUNT CHANGED" and bool(cloud.account_change.probed) and bool(cloud.account_change.empty), "a different account with no cloud save asks first")
+	check(mock.saves == 1 and CS.progress_hash(save.to_dict()) == CS.progress_hash(rich), "nothing was uploaded to the new account and the local save is unchanged")
+	check(mock.blob_of("acct-A") == a_blob and not mock.has_blob_of("acct-B"), "account A's cloud save is untouched and B still has none")
+	var checks_before: int = mock.checks
+	cloud.sync_now()
+	cloud._on_timer()
+	await process_frame
+	check(mock.checks == checks_before and cloud.status() == St.ACCOUNT, "scheduled syncs do not run while the decision waits")
+	cloud.account_use_cloud()
+	check(cloud.status() == St.ACCOUNT, "loading a cloud save that does not exist is not possible")
+	cloud.account_use_local()
+	await _cloud_settle(cloud)
+	check(cloud.status() == St.SYNCED and cloud.account_change.is_empty() and _blob_hash(mock.blob_of("acct-B")) == CS.progress_hash(save.to_dict()), "choosing this device's save carries it to account B")
+	check(mock.blob_of("acct-A") == a_blob, "and account A's cloud save is still untouched")
+	await _free_cloud(cloud)
+
+	# --- Account A, then account B that already has a cloud save ---
+	_cloud_rich_save()
+	_clear_cloud_files()
+	rich = save.to_dict()
+	mock = _cloud_mock_script.new()
+	cloud = _make_cloud(mock)
+	await _cloud_settle(cloud)
+	a_blob = mock.blob.duplicate()
+	var b_side: Dictionary = rich.duplicate(true)
+	b_side.salvage = 777
+	b_side.pilot_xp = 1234
+	_switch_account(mock, "acct-B")
+	mock.set_blob(CS.encode(b_side))
+	cloud.sync_now(true)
+	await _cloud_settle(cloud)
+	check(cloud.status() == St.ACCOUNT and int(cloud.account_change.cloud.salvage) == 777, "account B's existing cloud save is shown")
+	check(save.salvage == 12345 and _blob_hash(mock.blob) == CS.progress_hash(b_side) and mock.saves == 1, "neither save changed while waiting")
+	cloud.account_use_cloud()
+	await _cloud_settle(cloud)
+	check(save.salvage == 777 and cloud.status() == St.SYNCED, "choosing the new account's save restores it")
+	check(FileAccess.file_exists(save.path + ".before_cloud") and int(CS.decode(_read_blob(save.path + ".cloudconflict")).data.salvage) == 12345, "and this device's save is kept in files")
+	check(mock.blob_of("acct-A") == a_blob, "account A's cloud save is untouched")
+	# Back to A: the device now holds B's save, so it asks again and changes nothing.
+	_switch_account(mock, "acct-A")
+	await _cloud_settle(cloud)
+	check(cloud.status() == St.ACCOUNT and int(cloud.account_change.cloud.salvage) == 12345, "switching back to A asks again, showing A's cloud save")
+	cloud.account_pause()
+	check(cloud.status_label() == "SYNC PAUSED" and save.salvage == 777 and mock.blob_of("acct-A") == a_blob and _blob_hash(mock.blob_of("acct-B")) == CS.progress_hash(b_side), "pausing leaves every save as it was")
+	await _free_cloud(cloud)
+
+	# --- B with a cloud save, and the player carries this device's save over it ---
+	_cloud_rich_save()
+	_clear_cloud_files()
+	rich = save.to_dict()
+	mock = _cloud_mock_script.new()
+	cloud = _make_cloud(mock)
+	await _cloud_settle(cloud)
+	_switch_account(mock, "acct-B")
+	mock.set_blob(CS.encode(b_side))
+	cloud.sync_now(true)
+	await _cloud_settle(cloud)
+	cloud.account_use_local()
+	await _cloud_settle(cloud)
+	check(cloud.status() == St.SYNCED and _blob_hash(mock.blob) == CS.progress_hash(save.to_dict()), "this device's save replaced B's cloud save by choice")
+	check(int(CS.decode(_read_blob(save.path + ".cloudconflict")).data.salvage) == 777, "and B's old cloud save was kept in a file")
+	await _free_cloud(cloud)
+
+	# --- Switching to B and straight back to A resumes normally ---
+	_cloud_rich_save()
+	_clear_cloud_files()
+	rich = save.to_dict()
+	mock = _cloud_mock_script.new()
+	cloud = _make_cloud(mock)
+	await _cloud_settle(cloud)
+	_switch_account(mock, "acct-B")
+	await _cloud_settle(cloud)
+	cloud.account_pause()
+	_switch_account(mock, "acct-A")
+	await _cloud_settle(cloud)
+	check(cloud.status() == St.SYNCED and cloud.account_change.is_empty() and mock.saves == 1 and CS.progress_hash(save.to_dict()) == CS.progress_hash(rich), "back on the original account, syncing resumes without a question")
+	# --- Signing out and in again as the same account ---
+	mock.set_auth(CS.Auth.SIGNED_OUT)
+	await process_frame
+	check(cloud.status() == St.GUEST and CS.progress_hash(save.to_dict()) == CS.progress_hash(rich), "signed out is LOCAL GUEST with the save intact")
+	mock.set_auth(CS.Auth.SIGNED_IN)
+	await _cloud_settle(cloud)
+	check(cloud.status() == St.SYNCED and cloud.account_change.is_empty() and mock.saves == 1, "signing in again as the same account needs no decision")
+	await _free_cloud(cloud)
+
+	# --- The account changes while a request is pending ---
+	_cloud_rich_save()
+	_clear_cloud_files()
+	mock = _cloud_mock_script.new()
+	mock.late_after_abort = true
+	cloud = _make_cloud(mock)
+	await _cloud_settle(cloud)
+	var saves_a: int = mock.saves
+	a_blob = mock.blob.duplicate()
+	save.salvage += 9
+	save.save_data()
+	var pending_local: Dictionary = save.to_dict()
+	mock.hold = "check"
+	cloud.sync_now(true)
+	await process_frame
+	await process_frame
+	check(cloud.busy, "a request is pending")
+	_switch_account(mock, "acct-B")
+	mock.hold = ""
+	mock.release()
+	await _cloud_settle(cloud)
+	check(cloud.status() == St.ACCOUNT and mock.saves == saves_a, "the late answer for account A decided nothing: the new account is asked about, nothing uploaded")
+	check(mock.blob_of("acct-A") == a_blob and not mock.has_blob_of("acct-B") and CS.progress_hash(save.to_dict()) == CS.progress_hash(pending_local), "A's cloud save and the local changes are exactly as they were")
+	await _free_cloud(cloud)
+	# A change nobody announced is still caught, because the player is confirmed before every sync.
+	_cloud_rich_save()
+	_clear_cloud_files()
+	mock = _cloud_mock_script.new()
+	cloud = _make_cloud(mock)
+	await _cloud_settle(cloud)
+	mock.set_account("acct-B")
+	save.salvage += 1
+	save.save_data()
+	await _cloud_settle(cloud)
+	check(cloud.status() == St.ACCOUNT and mock.saves == 1, "a silent account change is caught at the next sync and nothing is uploaded")
+	await _free_cloud(cloud)
+
+	# --- The identity cannot be confirmed ---
+	_cloud_rich_save()
+	_clear_cloud_files()
+	rich = save.to_dict()
+	mock = _cloud_mock_script.new()
+	mock.identity_empty = true
+	cloud = _make_cloud(mock)
+	await _cloud_settle(cloud)
+	check(cloud.status() == St.ERROR and cloud._fail_kind == "identity" and "which Google Play Games account" in cloud.last_error, "an unknown player means no sync, with an explanation")
+	check(mock.loads == 0 and mock.saves == 0 and CS.progress_hash(save.to_dict()) == CS.progress_hash(rich) and not FileAccess.file_exists(save.path + ".cloud"), "nothing was read, written or recorded")
+	mock.identity_empty = false
+	mock.identity_fail = true
+	cloud.sync_now(true)
+	await _cloud_settle(cloud)
+	check(cloud._fail_kind == "identity" and mock.loads == 0, "a failed identity check also stops the sync")
+	mock.identity_fail = false
+	cloud.sync_now(true)
+	await _cloud_settle(cloud)
+	check(cloud.status() == St.SYNCED, "and it syncs once the player can be confirmed")
+	await _free_cloud(cloud)
+
+	# --- A sync record from before accounts were recorded is not trusted ---
+	_cloud_rich_save()
+	_clear_cloud_files()
+	mock = _cloud_mock_script.new()
+	cloud = _make_cloud(mock)
+	await _cloud_settle(cloud)
+	await _free_cloud(cloud)
+	var legacy := ConfigFile.new()
+	legacy.load(save.path + ".cloud")
+	legacy.erase_section_key("sync", "account")
+	legacy.save(save.path + ".cloud")
+	save.salvage += 1
+	save.save_data()
+	cloud = _cloud_script.new()
+	cloud.autostart = false
+	cloud.debounce = 0.05
+	root.add_child(cloud)
+	cloud.use(mock)
+	await _cloud_settle(cloud)
+	check(cloud.status() == St.CONFLICT and mock.saves == 1, "a record that names no account is dropped: both saves have progress, so the player is asked")
+	await _free_cloud(cloud)
+	_clear_cloud_files()
+	print("cloud accounts ok")
+
+## Signing out, or switching account, with a request pending must leave nothing running.
+func _test_cloud_cleanup() -> void:
+	var CS = _cloud_script_class()
+	var St = CS.Status
+	# --- Sign out while a load is pending, then sign in again ---
+	_cloud_rich_save()
+	_clear_cloud_files()
+	var rich: Dictionary = save.to_dict()
+	var mock = _cloud_mock_script.new()
+	mock.hold = "load"
+	mock.late_after_abort = true
+	var cloud = _make_cloud(mock)
+	for i in range(8):
+		await process_frame
+	check(cloud.busy, "a load is pending")
+	mock.set_auth(CS.Auth.SIGNED_OUT)
+	check(not cloud.busy and cloud.status() == St.GUEST and mock.aborts >= 1 and cloud._timer.is_stopped(), "signing out stops the request, tells the backend to abort and cancels the timer")
+	mock.release()
+	await process_frame
+	check(cloud.status() == St.GUEST and mock.saves == 0 and CS.progress_hash(save.to_dict()) == CS.progress_hash(rich), "the late load answer changed nothing")
+	mock.hold = ""
+	mock.set_auth(CS.Auth.SIGNED_IN)
+	await _cloud_settle(cloud)
+	check(cloud.status() == St.SYNCED and mock.saves == 1 and mock.exists, "signing in again starts a fresh operation that succeeds")
+	await _free_cloud(cloud)
+	# --- Sign out while a save is pending, then sign in again ---
+	_cloud_rich_save()
+	_clear_cloud_files()
+	rich = save.to_dict()
+	mock = _cloud_mock_script.new()
+	mock.hold = "save"
+	mock.late_after_abort = true
+	cloud = _make_cloud(mock)
+	for i in range(10):
+		await process_frame
+	check(cloud.busy and mock.saves == 1, "a save is pending")
+	mock.set_auth(CS.Auth.SIGNED_OUT)
+	check(not cloud.busy and cloud.status() == St.GUEST and mock.aborts >= 1, "signing out abandons the save")
+	mock.release()
+	await process_frame
+	check(cloud.status() == St.GUEST, "the late save answer did not bring the session back")
+	var rec := ConfigFile.new()
+	var recorded := rec.load(save.path + ".cloud") == OK and str(rec.get_value("sync", "base_local", "")) != ""
+	check(not recorded, "the abandoned save was not recorded as synced")
+	mock.hold = ""
+	mock.set_auth(CS.Auth.SIGNED_IN)
+	await _cloud_settle(cloud)
+	check(cloud.status() == St.SYNCED and mock.saves == 1 and CS.progress_hash(save.to_dict()) == CS.progress_hash(rich), "signing in again finds the cloud matches and finishes cleanly")
+	await _free_cloud(cloud)
+	# --- A scheduled retry does not survive a sign-out ---
+	_cloud_rich_save()
+	_clear_cloud_files()
+	mock = _cloud_mock_script.new()
+	mock.offline = true
+	cloud = _make_cloud(mock)
+	await _cloud_settle(cloud)
+	check(cloud.status() == St.OFFLINE and not cloud._timer.is_stopped(), "an offline failure schedules a retry")
+	mock.set_auth(CS.Auth.SIGNED_OUT)
+	check(cloud._timer.is_stopped() and cloud.last_error == "", "signing out cancels the scheduled retry and clears the old error")
+	await _free_cloud(cloud)
+	# --- Sign-in that never answers ends in an error, not in waiting forever ---
+	mock = _cloud_mock_script.new()
+	mock.set_auth(CS.Auth.CHECKING)
+	cloud = _make_cloud(mock, false)
+	await create_timer(0.8).timeout
+	check(mock.auth == CS.Auth.ERROR and cloud.status() == St.ERROR and cloud.account_text() != "", "a sign-in check that never answers becomes SYNC ERROR")
+	await _free_cloud(cloud)
+	_clear_cloud_files()
+	print("cloud cleanup ok")
+
+## Every field of Save.PROGRESS_KEYS is either meaningful progress or listed as generated. Anything meaningful, alone,
+## stops a save being taken for a fresh install.
+func _test_has_progress() -> void:
+	var CS = _cloud_script_class()
+	var fresh: Dictionary = save._defaults.duplicate(true)
+	# What a brand new install holds after its first launch: today's contracts and the title screen's derived statistics.
+	fresh["contracts"] = {"day": 20000, "list": [{"id": "c1", "text": "Do a thing", "stat": "kill", "goal": 50, "reward": 40, "progress": 0, "done": false, "claimed": false}], "reroll": 1}
+	fresh["stats"] = {"ships_owned": 1, "best_mastery": 1, "pilot_level": 1}
+	fresh["gear_uid"] = 17
+	fresh["danger"] = {"done": {}, "last": {}}
+	check(not CS.has_progress(fresh), "a new install with generated contracts, derived statistics and a gear counter is not progress")
+	check(not CS.has_progress(save._defaults), "the bare defaults are not progress")
+	var covered := {}
+	var cases := {
+		"salvage": 1, "parts": 1, "pilot_xp": 5, "best_score": 10, "endless_best_wave": 2, "expedition_wins": 1, "tier_unlocked": 1, "reroll_tokens": 1,
+		"unlocked": 2, "ship": "lancer", "nova_mode": "singularity",
+		"star_mask": {1: 1}, "level_best": {1: 500}, "upgrades": {"hull": 1}, "mastery": {"nova": 10}, "paints": {"nova": "ember"}, "tutorial": {"move": true},
+		"achievements": {"first_kill": true}, "codex": {"fighter": true}, "expedition": {"active": true}, "weekly_best": {"w": 1}, "daily_best": {"d": 1},
+		"equipped": {"nova": {"weapon": 3}}, "tier_data": {1: {"unlocked": 2, "stars": {}}},
+		"gear": [{"uid": 1}], "blueprints": ["bp_aegis"], "loadout": ["spread"], "side_cleared": [101], "bosses_beaten": [1], "seen_unlocks": ["u"], "rift_claimed": [5],
+		"owned_ships": ["nova", "lancer"],
+		"stats": {"kill": 1}, "contracts": {"day": 20000, "list": [{"progress": 3, "done": false, "claimed": false}]},
+		"danger": {"done": {"rush": 1}, "last": {}},
+	}
+	for key in cases:
+		var d: Dictionary = fresh.duplicate(true)
+		d[key] = cases[key]
+		covered[key] = true
+		check(CS.has_progress(d), "%s alone counts as progress" % key)
+	# Variants of the two keys that are partly generated.
+	for variant in [
+		["stats", {"ships_owned": 1, "seen_enemy": ["fighter"]}], ["stats", {"best_combo": 12}], ["stats", {"ships_owned": 1, "kill": 0, "boss": 0}],
+		["contracts", {"day": 1, "list": [{"progress": 0, "done": true, "claimed": false}]}], ["contracts", {"day": 1, "list": [{"progress": 0, "done": false, "claimed": true}]}],
+		["danger", {"done": {}, "last": {"campaign": ["rush"]}}],
+	]:
+		var d2: Dictionary = fresh.duplicate(true)
+		d2[variant[0]] = variant[1]
+		var expect: bool = not (str(variant[0]) == "stats" and variant[1].get("kill", -1) == 0)
+		check(CS.has_progress(d2) == expect, "%s variant %s %s progress" % [variant[0], str(variant[1]), "is" if expect else "is not"])
+	# Nothing in PROGRESS_KEYS may be unclassified: a new key must be added to has_progress, or listed as generated.
+	for key in save.PROGRESS_KEYS:
+		check(covered.has(key) or key in CS.GENERATED_KEYS, "PROGRESS_KEYS entry %s is classified by has_progress" % key)
+	for key in CS.GENERATED_KEYS:
+		var d3: Dictionary = fresh.duplicate(true)
+		d3[key] = 9999
+		check(not CS.has_progress(d3), "generated key %s alone does not count" % key)
+	print("has_progress ok")
+
+
+## The Google Play Games adapter, run against a stand-in for the plugin (tools/fake_pgs) that copies the v3.4.0 wrappers.
+## This proves the adapter's lifecycle and its handling of answers, silence, conflicts and late callbacks on desktop.
+## It does not prove anything about the real plugin, Google's services or a phone.
+
+const FAKE_SCRIPTS := {
+	"sign_in": "res://tools/fake_pgs/fake_sign_in_client.gd",
+	"snapshots": "res://tools/fake_pgs/fake_snapshots_client.gd",
+	"players": "res://tools/fake_pgs/fake_players_client.gd",
+}
+
+func _pgs_rig(with_main := true, native := true) -> Dictionary:
+	var rig := {"main": null}
+	if with_main:
+		var main = load("res://tools/fake_pgs/fake_play_games_services.gd").new()
+		main.name = "GodotPlayGameServices"
+		main.native_present = native
+		root.add_child(main)
+		rig.main = main
+	var adapter = load("res://src/meta/cloud_play_games.gd").new()
+	adapter.platform_name = "Android"
+	adapter.verify_delay = 0.0
+	adapter.scripts = FAKE_SCRIPTS.duplicate()
+	var main_ref = rig.main
+	adapter.native_present = func() -> bool: return main_ref != null and bool(main_ref.native_present)
+	var cloud = _cloud_script.new()
+	cloud.autostart = false
+	cloud.debounce = 0.05
+	cloud.timeout = 1.0
+	cloud.auth_timeout = 0.4
+	root.add_child(cloud)
+	cloud.forget_state()
+	rig.adapter = adapter
+	rig.cloud = cloud
+	return rig
+
+func _pgs_free(rig: Dictionary) -> void:
+	rig.cloud.queue_free()
+	if rig.main != null:
+		rig.main.queue_free()
+	await process_frame
+
+func _until(cond: Callable, frames := 150) -> bool:
+	for i in range(frames):
+		if cond.call():
+			return true
+		await process_frame
+	return cond.call()
+
+## Plays the sign-in and the player check, up to the point where the plugin is asked to open the snapshot.
+func _pgs_to_load(rig: Dictionary, player := "player-1") -> void:
+	var android = rig.main.android_plugin
+	var loads: int = android.count("loadGame")
+	var players: int = android.count("loadCurrentPlayer")
+	android.emit_authenticated(true)
+	await _until(func(): return android.count("loadCurrentPlayer") > players)
+	android.emit_player(player)
+	await _until(func(): return android.count("loadGame") > loads)
+
+## ... and on to the point where it is asked to write the snapshot (the cloud holds nothing yet).
+func _pgs_to_save(rig: Dictionary) -> void:
+	var android = rig.main.android_plugin
+	var saves: int = android.count("saveGame")
+	await _pgs_to_load(rig)
+	android.emit_loaded(PackedByteArray())
+	await _until(func(): return android.count("saveGame") > saves)
+
+func _test_cloud_plugin() -> void:
+	var CS = _cloud_script_class()
+	var St = CS.Status
+	var files := [save.path + ".cloudconflict.1", save.path + ".cloudconflict.2"]
+	# --- Availability is decided by what is really there ---
+	var rig := _pgs_rig()
+	check(rig.adapter.available(), "with the plugin's autoload, client scripts and native plugin present, the integration is available")
+	rig.adapter.platform_name = "Windows"
+	check(not rig.adapter.available(), "off Android it is not available")
+	rig.adapter.platform_name = "Android"
+	rig.main.native_present = false
+	check(not rig.adapter.available(), "without the native plugin it is not available")
+	rig.main.native_present = true
+	rig.adapter.scripts = {"sign_in": "res://tools/fake_pgs/missing.gd", "snapshots": FAKE_SCRIPTS.snapshots, "players": FAKE_SCRIPTS.players}
+	check(not rig.adapter.available(), "with a client script missing it is not available")
+	await _pgs_free(rig)
+	rig = _pgs_rig(false)
+	check(not rig.adapter.available(), "without the plugin's autoload it is not available")
+	rig.cloud.use(rig.adapter)
+	check(rig.cloud.status() == St.GUEST and rig.adapter._clients == null, "started anyway, it fails safely to LOCAL GUEST and creates nothing")
+	await _pgs_free(rig)
+	rig = _pgs_rig(true, false)
+	rig.cloud.use(rig.adapter)
+	check(rig.cloud.status() == St.GUEST and rig.adapter._clients == null and "could not start" in rig.cloud.account_text(), "a failed plugin initialize also plays as LOCAL GUEST, with a reason")
+	await _pgs_free(rig)
+
+	# --- The lifecycle: initialize, then create the client Nodes, which then stay ---
+	_cloud_rich_save()
+	_clear_cloud_files()
+	var rich: Dictionary = save.to_dict()
+	rig = _pgs_rig()
+	var cloud = rig.cloud
+	var adapter = rig.adapter
+	var main = rig.main
+	cloud.use(adapter)
+	var android = main.android_plugin
+	check(android != null and android.initialized and main.initialize_calls == 1, "the plugin's autoload was initialized once")
+	check(adapter._sign_in.wired and adapter._snapshots.wired and adapter._players.wired, "the client Nodes were created after initialization and connected to the plugin")
+	check(adapter._clients.get_parent() == cloud and adapter._sign_in.is_inside_tree() and adapter._snapshots.get_parent() == adapter._clients, "and live under the Cloud autoload for the whole session")
+	check(android.count("isAuthenticated") == 1 and cloud.status() == St.CONNECTING, "the sign-in check is asked for explicitly")
+	cloud.use(adapter)
+	check(main.initialize_calls == 1 and adapter._clients.get_child_count() == 3, "starting again does not initialize twice or duplicate the clients")
+	await _pgs_to_save(rig)
+	check(cloud.status() == St.CONNECTED or cloud.busy, "signed in, the account is confirmed before the save is touched")
+	check(android.last("loadCurrentPlayer")[1] == true and android.last("loadGame")[2] == true, "the player is reloaded fresh, and the snapshot is opened with create-if-missing")
+	var written: Array = android.last("saveGame")
+	check(str(written[1]) == CS.SNAPSHOT_NAME and bool(CS.decode(written[3]).ok) and CS.progress_hash(CS.decode(written[3]).data) == CS.progress_hash(rich) and int(written[5]) > 1000000000, "the complete save is written under the one snapshot name")
+	android.emit_saved(true)
+	await _until(func(): return android.count("loadGame") == 2)
+	check(cloud.busy, "'saved' is not believed until the snapshot has been read back")
+	android.emit_loaded(written[3])
+	await _cloud_settle(cloud)
+	check(cloud.status() == St.SYNCED and not cloud.pending, "and then the sync is complete")
+	await _pgs_free(rig)
+
+	# --- A read-back that does not match is not a success ---
+	_cloud_rich_save()
+	_clear_cloud_files()
+	rig = _pgs_rig()
+	rig.cloud.use(rig.adapter)
+	android = rig.main.android_plugin
+	await _pgs_to_save(rig)
+	android.emit_saved(true)
+	await _until(func(): return android.count("loadGame") == 2)
+	android.emit_loaded(PackedByteArray([1, 2, 3]))
+	await _cloud_settle(rig.cloud)
+	check(rig.cloud.status() == St.ERROR and rig.cloud.pending and rig.cloud._fail_kind == "unverified", "a snapshot that does not hold what was written is an error, not CLOUD SYNCED")
+	await _pgs_free(rig)
+
+	# --- A conflict while saving, and while loading ---
+	for origin in ["SAVE", "LOAD"]:
+		_cloud_rich_save()
+		_clear_cloud_files()
+		rich = save.to_dict()
+		var mine: Dictionary = rich.duplicate(true)
+		mine.salvage = 101
+		var theirs: Dictionary = rich.duplicate(true)
+		theirs.salvage = 202
+		rig = _pgs_rig()
+		rig.cloud.use(rig.adapter)
+		android = rig.main.android_plugin
+		var t0 := Time.get_ticks_msec()
+		if origin == "SAVE":
+			await _pgs_to_save(rig)
+		else:
+			await _pgs_to_load(rig)
+		android.emit_conflict(origin, CS.encode(mine), CS.encode(theirs))
+		await _cloud_settle(rig.cloud)
+		check(rig.cloud._fail_kind == "conflict" and rig.cloud.status() == St.ERROR and not rig.cloud.busy, "a %s conflict completes the request at once as a failure" % origin)
+		check(Time.get_ticks_msec() - t0 < 900, "without waiting for the timeout (%s)" % origin)
+		check(int(CS.decode(_read_blob(files[0])).data.salvage) == 101 and int(CS.decode(_read_blob(files[1])).data.salvage) == 202, "both versions Google reported are kept as files (%s)" % origin)
+		check(CS.progress_hash(save.to_dict()) == CS.progress_hash(rich), "the local save is untouched (%s)" % origin)
+		var loads_now: int = android.count("loadGame")
+		var saves_now: int = android.count("saveGame")
+		android.emit_saved(true)
+		android.emit_loaded(CS.encode(rich))
+		await process_frame
+		check(android.count("loadGame") == loads_now and android.count("saveGame") == saves_now and rig.cloud._fail_kind == "conflict", "answers that arrive after the conflict change nothing (%s)" % origin)
+		await _pgs_free(rig)
+	# A request is answered exactly once, whatever the plugin emits afterwards.
+	rig = _pgs_rig()
+	rig.adapter.start(rig.cloud)
+	android = rig.main.android_plugin
+	android.emit_authenticated(true)
+	await process_frame
+	var answers := []
+	rig.adapter.save_snapshot(CS.SNAPSHOT_NAME, "d", PackedByteArray([1, 2, 3]), 1, func(r): answers.append(r))
+	android.emit_conflict("SAVE", PackedByteArray([1]), PackedByteArray([2]))
+	android.emit_saved(true)
+	android.emit_loaded(PackedByteArray([1, 2, 3]))
+	android.emit_conflict("SAVE", PackedByteArray([1]), PackedByteArray([2]))
+	await process_frame
+	check(answers.size() == 1 and str(answers[0].kind) == "conflict" and (answers[0].candidates as Array).size() == 2, "a request completes exactly once, with both versions attached")
+	answers.clear()
+	rig.adapter.save_snapshot(CS.SNAPSHOT_NAME, "d", PackedByteArray([1, 2, 3]), 1, func(r): answers.append(r))
+	android.emit_saved(true)
+	android.emit_loaded(PackedByteArray([1, 2, 3]))
+	android.emit_saved(true)
+	android.emit_loaded(PackedByteArray([1, 2, 3]))
+	await process_frame
+	check(answers.size() == 1 and bool(answers[0].ok), "a save answered, verified and then repeated still completes once")
+	await _pgs_free(rig)
+
+	# --- Silence times out, a late answer is ignored, and the next request works ---
+	_cloud_rich_save()
+	_clear_cloud_files()
+	rich = save.to_dict()
+	rig = _pgs_rig()
+	rig.cloud.timeout = 0.3
+	rig.cloud.use(rig.adapter)
+	android = rig.main.android_plugin
+	await _pgs_to_load(rig)
+	await create_timer(0.7).timeout
+	check(rig.cloud.status() == St.OFFLINE and not rig.adapter._done.is_valid(), "silence ends as OFFLINE and the adapter forgets the request")
+	var saves_before: int = android.count("saveGame")
+	android.emit_loaded(PackedByteArray())
+	await process_frame
+	check(android.count("saveGame") == saves_before and rig.cloud.status() == St.OFFLINE and CS.progress_hash(save.to_dict()) == CS.progress_hash(rich), "a late answer after the timeout changes nothing")
+	var players_before: int = android.count("loadCurrentPlayer")
+	rig.cloud.sync_now(true)
+	await _until(func(): return android.count("loadCurrentPlayer") > players_before)
+	check(android.count("loadCurrentPlayer") == players_before + 1 and rig.cloud.busy, "and the next sync starts normally")
+	await _pgs_free(rig)
+
+	# --- Sign out with a request pending, then sign in again ---
+	for pending_step in ["load", "save"]:
+		_cloud_rich_save()
+		_clear_cloud_files()
+		rich = save.to_dict()
+		rig = _pgs_rig()
+		rig.cloud.use(rig.adapter)
+		android = rig.main.android_plugin
+		if pending_step == "load":
+			await _pgs_to_load(rig)
+		else:
+			await _pgs_to_save(rig)
+		android.emit_authenticated(false)
+		check(rig.cloud.status() == St.GUEST and not rig.cloud.busy and not rig.adapter._done.is_valid(), "signing out with a %s pending drops it" % pending_step)
+		var s0: int = android.count("saveGame")
+		var l0: int = android.count("loadGame")
+		android.emit_saved(true)
+		android.emit_loaded(CS.encode(rich))
+		android.emit_player("player-1")
+		await process_frame
+		check(android.count("saveGame") == s0 and android.count("loadGame") == l0 and rig.cloud.status() == St.GUEST, "its late answers changed nothing (%s)" % pending_step)
+		await _pgs_to_load(rig)
+		check(rig.cloud.busy, "signing in again starts a fresh operation (%s)" % pending_step)
+		await _pgs_free(rig)
+
+	# --- An unknown player means no sync ---
+	_cloud_rich_save()
+	_clear_cloud_files()
+	rig = _pgs_rig()
+	rig.cloud.use(rig.adapter)
+	android = rig.main.android_plugin
+	android.emit_authenticated(true)
+	await _until(func(): return android.count("loadCurrentPlayer") == 1)
+	android.emit_player("")
+	await _cloud_settle(rig.cloud)
+	check(rig.cloud._fail_kind == "identity" and rig.cloud.status() == St.ERROR and android.count("loadGame") == 0 and android.count("saveGame") == 0, "a missing player id stops the sync before the save is touched")
+	await _pgs_free(rig)
+
+	# --- Sign-in answers ---
+	rig = _pgs_rig()
+	rig.cloud.use(rig.adapter)
+	android = rig.main.android_plugin
+	android.emit_authenticated(false)
+	await process_frame
+	check(rig.cloud.status() == St.GUEST and rig.cloud.can_connect(), "not signed in is LOCAL GUEST with a Connect button")
+	rig.cloud.connect_account()
+	check(android.count("signIn") == 1 and rig.adapter.auth == CS.Auth.CHECKING, "Connect asks the plugin to sign in")
+	await _pgs_free(rig)
+	for f in files:
+		DirAccess.remove_absolute(f)
+	_clear_cloud_files()
+	print("cloud plugin ok")
 
 func _sha(bytes: PackedByteArray) -> String:
 	var ctx := HashingContext.new()

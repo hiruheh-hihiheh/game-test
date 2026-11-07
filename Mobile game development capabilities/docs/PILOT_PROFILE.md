@@ -9,7 +9,7 @@ The page is `src/menus/menu_profile.gd`. It is registered as the `profile` page 
 | Section | What it shows |
 |---|---|
 | Hero | A large level emblem with the rank wings, total pilot XP, and the ship you fly with its role and mastery |
-| Account & cloud save | Directly under the hero card. The Google Play Games / cloud state as one honest label, the account line, the last sync time, an unsynced indicator, and Sync Now / Retry / Connect. When two saves disagree it becomes the CHOOSE A SAVE screen. See [CLOUD_SAVE.md](CLOUD_SAVE.md) |
+| Account & cloud save | Directly under the hero card. The Google Play Games / cloud state as one honest label, the account line, the last sync time, an unsynced indicator, and Sync Now / Retry / Connect. When two saves disagree it becomes the CHOOSE A SAVE screen, and when a different Google account is signed in it becomes the ACCOUNT CHANGED screen. See [CLOUD_SAVE.md](CLOUD_SAVE.md) |
 | XP progression | Level, XP into the level out of XP needed, a large bar with a percentage (it fills up when the page opens, with a soft glint), exact XP to the next level, lifetime XP, and a note that there is no level cap |
 | Next level rewards | The salvage, parts and permanent bonus gains for the next level. When the next level pays gear, a gold card names the rarity and the level. If the permanent bonuses are capped, the bonus tiles say MAXED |
 | Progression roadmap | The next level, the next three gear drops after it, and level 100 (the point where damage and shield bonuses stop growing). Nothing already reached is offered as upcoming, and level 100 appears once |

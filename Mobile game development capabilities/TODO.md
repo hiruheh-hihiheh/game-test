@@ -29,7 +29,7 @@
 - Next features, designed in `docs/ROADMAP_NEXT.md`: Build Report cards, Weekly Boss Bounties, gear sets, faction reputation, daily rankings
 
 - Finish the grind plan: ship ranks, hunting trophies, a reward track, login streaks, gear locking and sets (see `docs/GRIND.md`)
-- Cloud save: the game side is built and tested with a mock service (`docs/CLOUD_SAVE.md`). Still to do, needing your accounts: install the Play Games plugin, create the Play Console game, add the OAuth clients and SHA-1s, set the Game ID, and test on a phone. If the plugin does not build on Godot 4.7.2, write the small Kotlin plugin described in that document.
+- Cloud save: the game side is built and tested with a mock service (`docs/CLOUD_SAVE.md`). Still to do, needing your accounts: install the Play Games plugin, create the Play Console game, add the OAuth clients and SHA-1s, set the Game ID, and test on a phone. The stock plugin cannot resolve snapshot conflicts and its AAR is built for Godot 4.5.1; if that is not acceptable, write the small Kotlin plugin described in section 9 of that document.
 - Leaderboards for Endless and the Weekly Boss.
 - Opt-in crash reporting through `Telemetry.provider`.
 - Season bonus rules. The season table exists, but it doesn't change gameplay yet.

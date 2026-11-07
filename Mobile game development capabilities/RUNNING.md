@@ -57,7 +57,7 @@ Always pass `-- --test`. It makes the game use a throwaway save, so your real pr
 $godot = "E:\Godot_v4.7.2-stable_win64.exe\Godot_v4.7.2-stable_win64_console.exe"
 ```
 
-Every system (content, saves, menus, ships, cards, bosses, Expedition, Rift, Danger Contracts, leaks). This is the quick check to run before committing. It takes about a minute and ends with `RESULT failures=0`:
+Every system (content, saves, menus, ships, cards, bosses, Expedition, Rift, Danger Contracts, leaks). This is the quick check to run before committing. It takes about a minute and ends with `RESULT failures=0 checks=<number of checks run>`:
 
 ```powershell
 & $godot --headless --path . --script tools/test_game.gd -- --test --quick

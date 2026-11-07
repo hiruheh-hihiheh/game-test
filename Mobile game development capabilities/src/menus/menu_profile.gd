@@ -30,15 +30,33 @@ func on_ui(id: String) -> void:
 		"profile_hangar":
 			m.go("hangar")
 		"cloud_sync":
-			Cloud.sync_now()
+			Cloud.sync_now(true)
 		"cloud_connect":
 			Cloud.connect_account()
 		"cloud_keep":
 			_confirm = "keep"
 		"cloud_restore":
 			_confirm = "restore"
-		"cloud_cancel":
+		"cloud_cancel", "cloud_acct_cancel":
 			_confirm = ""
+		"cloud_acct_local":
+			_confirm = "acct_local"
+		"cloud_acct_cloud":
+			_confirm = "acct_cloud"
+		"cloud_acct_pause":
+			_confirm = ""
+			Cloud.account_pause()
+		"cloud_acct_review":
+			Cloud.account_review()
+		"cloud_acct_retry":
+			Cloud.sync_now(true)
+		"cloud_acct_confirm":
+			var chosen := _confirm
+			_confirm = ""
+			if chosen == "acct_local":
+				Cloud.account_use_local()
+			elif chosen == "acct_cloud":
+				Cloud.account_use_cloud()
 		"cloud_confirm":
 			var which := _confirm
 			_confirm = ""
@@ -275,6 +293,8 @@ func _account(c: UILayer, x: float, y: float, w: float) -> float:
 	var st: int = Cloud.status()
 	if st == CloudSave.Status.CONFLICT and not Cloud.conflict.is_empty():
 		return _conflict_card(c, x, y, w)
+	if st == CloudSave.Status.ACCOUNT and not Cloud.account_change.is_empty():
+		return _account_change_card(c, x, y, w)
 	_confirm = ""
 	var accent := _status_color(st)
 	var inner := w - 48.0
@@ -376,6 +396,99 @@ func _conflict_card(c: UILayer, x: float, y: float, w: float) -> float:
 		var cloud_ok: bool = not (info.cloud as Dictionary).is_empty()
 		c.button("cloud_restore", Rect2(ox, cy, inner, 64.0), "RESTORE CLOUD SAVE", UI.VIOLET, {"size": 20, "careful": true, "disabled": not cloud_ok})
 		_paragraph(c, consequence_restore if cloud_ok else _wrap("The cloud save cannot be read, so it cannot be restored.", 16, inner), ox, cy + 64.0 + 8.0 + 14.0, 16, UI.TEXT_DIM)
+	_veiled(c, r)
+	return y + h + CARD_GAP
+
+## A different Google Play Games account is signed in. Nothing is touched until the player chooses.
+func _account_change_card(c: UILayer, x: float, y: float, w: float) -> float:
+	var info: Dictionary = Cloud.account_change
+	var inner := w - 48.0
+	var suspended := bool(info.get("suspended", false))
+	var probed := bool(info.get("probed", false))
+	var local: Dictionary = CloudSave.summarize(Save.to_dict())
+	var local_has := CloudSave.has_progress(Save.to_dict())
+	var cloud: Dictionary = info.get("cloud", {})
+	var cloud_ok := not cloud.is_empty()
+	var head := _wrap(Cloud.detail_text(), 17, inner)
+	var confirming := _confirm == "acct_local" or _confirm == "acct_cloud"
+	var texts := {
+		"local": _wrap("Uploads this device's progress to the new account and replaces any cloud save it has. A copy of that cloud save stays on this device.", 16, inner),
+		"cloud": _wrap("Replaces this device's progress with the new account's cloud save. A copy of this device's save stays on this device.", 16, inner),
+		"pause": _wrap("Changes nothing. This device keeps its save and nothing syncs.", 16, inner),
+	}
+	var h := 28.0 + 52.0 + 26.0 * float(head.size()) + 14.0
+	var note: Array = []
+	if suspended:
+		h += 64.0
+	elif not probed:
+		note = _wrap(Cloud.last_error if not Cloud.busy and not Cloud.last_error.is_empty() else "Checking the new account's cloud save.", 16, inner)
+		h += 26.0 * float(note.size()) + 14.0
+		if not Cloud.busy:
+			h += 64.0 + 14.0 + 64.0
+	else:
+		h += 168.0 + 18.0
+		if confirming:
+			h += 26.0 * float((texts.local if _confirm == "acct_local" else texts.cloud).size()) + 16.0 + 64.0 + 34.0 + 64.0
+		else:
+			h += 3.0 * (64.0 + 8.0 + 14.0) + 26.0 * float(texts.local.size() + texts.cloud.size() + texts.pause.size())
+	h += 16.0
+	var r := Rect2(x, y, w, h)
+	UI.glass(c, r, UI.Kind.CARD, UI.GOLD, {"chamfer": 18})
+	var ox := r.position.x + 24.0
+	var cy := r.position.y + 28.0
+	_label_chip(c, Vector2(ox, cy + 18.0), Cloud.status_label(), 20, UI.GOLD)
+	cy += 52.0
+	cy = _paragraph(c, head, ox, cy + 14.0, 17, UI.WHITE) - 14.0 + 14.0
+	if suspended:
+		if capture_text:
+			shown.append("CHOOSE WHAT TO DO")
+		c.button("cloud_acct_review", Rect2(ox, cy, inner, 64.0), "CHOOSE WHAT TO DO", UI.CYAN, {"size": 20})
+	elif not probed:
+		cy = _paragraph(c, note, ox, cy + 14.0, 16, UI.TEXT_DIM) - 14.0 + 14.0
+		if not Cloud.busy:
+			if capture_text:
+				shown.append("TRY AGAIN")
+				shown.append("PAUSE CLOUD SYNC")
+			c.button("cloud_acct_retry", Rect2(ox, cy, inner, 64.0), "TRY AGAIN", UI.CYAN, {"size": 20})
+			c.button("cloud_acct_pause", Rect2(ox, cy + 64.0 + 14.0, inner, 64.0), "PAUSE CLOUD SYNC", UI.CYAN, {"size": 20})
+	else:
+		var half := (inner - 14.0) * 0.5
+		for i in range(2):
+			var box := Rect2(ox + float(i) * (half + 14.0), cy, half, 168.0)
+			UI.glass(c, box, UI.Kind.SELECTED if i == 0 else UI.Kind.CARD, UI.CYAN if i == 0 else UI.VIOLET, {"chamfer": 12})
+			_t(c, "THIS DEVICE" if i == 0 else "NEW ACCOUNT'S CLOUD", box.position + Vector2(14.0, 30.0), 17 if i == 0 else 15, UI.CYAN if i == 0 else UI.VIOLET, true)
+			var sm: Dictionary = local if i == 0 else cloud
+			if i == 1 and not cloud_ok:
+				var word := "NO CLOUD SAVE" if bool(info.get("empty", false)) else "UNREADABLE"
+				_ft(c, word, box.position + Vector2(14.0, 70.0), 22, 13, half - 28.0, UI.GOLD if word == "NO CLOUD SAVE" else UI.RED, true)
+				if word == "UNREADABLE":
+					_paragraph(c, _wrap(str(info.get("bad", "")), 15, half - 28.0).slice(0, 3), box.position.x + 14.0, box.position.y + 100.0, 15, UI.TEXT_DIM, 22.0)
+			else:
+				_ft(c, "PILOT LEVEL %d" % int(sm.level), box.position + Vector2(14.0, 68.0), 22, 14, half - 28.0, UI.WHITE, true)
+				_ft(c, "%s SALVAGE" % UI.num(int(sm.salvage)), box.position + Vector2(14.0, 96.0), 17, 11, half - 28.0, UI.GOLD, true)
+				_ft(c, "%d STARS  ·  %d GEAR" % [int(sm.stars), int(sm.gear)], box.position + Vector2(14.0, 122.0), 16, 11, half - 28.0, UI.TEXT_DIM, true)
+				_ft(c, _ago(int(sm.saved_at)), box.position + Vector2(14.0, 148.0), 15, 11, half - 28.0, UI.TEXT_DIM, false)
+		cy += 168.0 + 18.0
+		if confirming:
+			var lines: Array = texts.local if _confirm == "acct_local" else texts.cloud
+			cy = _paragraph(c, lines, ox, cy + 14.0, 16, UI.GOLD) - 14.0 + 16.0
+			var yes := "YES, USE THIS DEVICE'S SAVE" if _confirm == "acct_local" else "YES, REPLACE THIS DEVICE'S SAVE"
+			if capture_text:
+				shown.append(yes)
+				shown.append("CANCEL")
+			c.button("cloud_acct_confirm", Rect2(ox, cy, inner, 64.0), yes, UI.RED, {"size": 20, "warning": true})
+			c.button("cloud_acct_cancel", Rect2(ox, cy + 64.0 + 34.0, inner, 64.0), "CANCEL", UI.CYAN, {"size": 20})
+		else:
+			var items := [
+				["cloud_acct_local", "USE THIS DEVICE'S SAVE", UI.CYAN, texts.local, not local_has],
+				["cloud_acct_cloud", "LOAD THIS ACCOUNT'S CLOUD SAVE", UI.VIOLET, texts.cloud, not cloud_ok],
+				["cloud_acct_pause", "PAUSE CLOUD SYNC", UI.CYAN, texts.pause, false],
+			]
+			for it in items:
+				if capture_text:
+					shown.append(str(it[1]))
+				c.button(str(it[0]), Rect2(ox, cy, inner, 64.0), str(it[1]), it[2], {"size": 20, "careful": true, "disabled": bool(it[4])})
+				cy = _paragraph(c, it[3], ox, cy + 64.0 + 8.0 + 14.0, 16, UI.TEXT_DIM) - 14.0 + 14.0
 	_veiled(c, r)
 	return y + h + CARD_GAP
 

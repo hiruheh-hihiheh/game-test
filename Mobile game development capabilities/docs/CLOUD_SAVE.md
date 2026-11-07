@@ -1,40 +1,54 @@
 # Cloud save and Google Play Games
 
-Status in one paragraph: the game side is built and tested against a mock cloud service. **The Google Play Games plugin is not installed in this repository, the Android build with it has never been made, and nothing here has run against Google's servers or on a phone.** Section 9 lists exactly what is unverified. Desktop builds play as a local guest and say so.
+**Status in one paragraph.** The game side is built and tested on desktop, against a mock cloud service and against a stand-in for the Google Play Games plugin. **The real plugin is not installed in this repository. No Android build with it has ever been made. Real Google Play Games sign-in and Saved Games have never been run, on a phone or anywhere else.** Section 11 lists exactly what is and is not verified. Desktop builds play as a local guest and say so.
 
 ## 1. What the player gets
 
 - The local save file stays the source of truth. The game never waits for the cloud, never reads progress from it while playing, and every cloud failure leaves local progress exactly as it was.
 - On Android with Google Play Games signed in, the whole progress save is copied to one Saved Games snapshot (`starfall_salvage_main`) after meaningful changes, and restored on a new install or a second device.
-- The Pilot Profile has an **ACCOUNT & CLOUD SAVE** section with real states: LOCAL GUEST, CONNECTING, GOOGLE PLAY GAMES CONNECTED, CLOUD SYNCED, SYNC PENDING, OFFLINE, SYNC ERROR, and CHOOSE A SAVE when two saves disagree. It shows the last sync time, an unsynced indicator, and Sync Now / Retry / Connect buttons.
+- The Pilot Profile has an **ACCOUNT & CLOUD SAVE** section with real states: LOCAL GUEST, CONNECTING, GOOGLE PLAY GAMES CONNECTED, CLOUD SYNCED, SYNC PENDING, OFFLINE, SYNC ERROR, CHOOSE A SAVE (two saves disagree) and ACCOUNT CHANGED / SYNC PAUSED (a different Google account is signed in). It shows the last sync time, an unsynced indicator, and Sync Now / Retry / Connect buttons.
 - Settings (volume, interface size, accessibility) are device choices and are **not** in the cloud save.
 
 ## 2. Files
 
 | File | Job |
 |---|---|
-| `src/meta/cloud_save.gd` (`CloudSave`) | Pure data: the `Backend` interface, versioned encode/decode, validation, fingerprints, summaries. No network. |
-| `src/meta/cloud_sync.gd` (autoload `Cloud`) | The orchestrator: decides upload, restore or ask; debounce, retry, timeouts, pause, the conflict choices. |
-| `src/meta/cloud_play_games.gd` | The Google Play Games adapter for the `godot-play-game-services` plugin. Looked up by name at run time. **Never run against the plugin.** |
-| `src/menus/menu_profile.gd` | The ACCOUNT & CLOUD SAVE section and the conflict screen. |
-| `tools/mock_cloud.gd` | An in-memory service for tests: async, can go offline, fail, fall silent, report conflicts. |
+| `src/meta/cloud_save.gd` (`CloudSave`) | Pure data: the `Backend` interface, versioned encode/decode, validation, `has_progress`, fingerprints, summaries, the account hash. No network. |
+| `src/meta/cloud_sync.gd` (autoload `Cloud`) | The orchestrator: decides upload, restore or ask; account binding and account-change choices; debounce, retry, timeouts, session cleanup. |
+| `src/meta/cloud_play_games.gd` | The adapter for the `godot-play-game-services` plugin: lifecycle, sign-in, player identity, snapshots, conflicts. |
+| `src/menus/menu_profile.gd` | The ACCOUNT & CLOUD SAVE section, the conflict screen and the account-change screen. |
+| `tools/mock_cloud.gd` | An in-memory service for tests: async, several accounts, offline, failures, silence, conflicts, held and late answers. |
+| `tools/fake_pgs/` | A stand-in for the plugin (autoload, native object, three client Nodes) that copies the v3.4.0 wrapper behaviour. Tests only. |
 | `src/save.gd` | `Save.restore_progress()` (validated whole-save restore) and the `saved` signal. |
 
 ## 3. What is stored
 
-`CloudSave.encode(Save.to_dict())`: a small plain-ASCII JSON envelope `{format, game, save_version, saved_at, checksum, payload}`. The payload is the complete progress dictionary (every key of `Save.PROGRESS_KEYS`: salvage, parts, pilot XP, stars, upgrades, ships, gear and what is equipped, mastery, achievements, codex, tiers, Rift claims, Danger Contracts, and so on) in Godot's variant encoding, base64 inside the JSON, so integer keys and number types survive. The checksum is SHA-256 of the payload and only protects against damage, it is not a signature.
+`CloudSave.encode(Save.to_dict())`: a small plain-ASCII JSON envelope `{format, game, save_version, saved_at, checksum, payload}`. The payload is the complete progress dictionary (every key of `Save.PROGRESS_KEYS`) in Godot's variant encoding, base64 inside the JSON, so integer keys and number types survive. The checksum is SHA-256 of the payload. It guards against damage and is not a signature.
 
-No tokens, account names or credentials are in the blob, in `starfall_save.cfg`, or in the sync record. A test checks that the save file contains none of `oauth`, `access_token`, `id_token`, `bearer`, `password`.
+No tokens, account names or credentials are in the blob or in `starfall_save.cfg`. The sync record (`starfall_save.cfg.cloud`) holds four things: two fingerprints, a time, and **a one-way SHA-256 hash of the Google Play Games player id** (never the id). A test checks the id does not appear in it and that the save file contains none of `oauth`, `access_token`, `id_token`, `bearer`, `password`.
 
 ## 4. Reading a cloud save is strict
 
-`CloudSave.decode` refuses, and the game keeps its local save, when the blob is empty, over 2.5 MB, not plain ASCII, not JSON, missing fields, from another game, a newer blob format, failing its checksum, written by a newer save version, or when `validate_progress` finds a wrong type, a value out of range, an unknown ship, a ship that is not owned, or bad gear (repeated ids, unknown slot or stat, level above the cap). Older save versions are accepted and filled in with a new player's values for any key they lack (`CloudSave.migrate` is where a step goes for the next version bump).
+`CloudSave.decode` refuses, and the game keeps its local save, when the blob is empty, over 2.5 MB, not plain ASCII, not JSON, missing fields, from another game, a newer blob format, failing its checksum, written by a newer save version, or when `validate_progress` finds a wrong type, a value out of range, an unknown ship, a ship that is not owned, or bad gear. Older save versions are accepted and missing keys take a new player's values (`CloudSave.migrate` is where a step goes for the next version bump). The payload is only decoded after its checksum matches.
 
-Restoring uses `Save.restore_progress`: reset progress, apply the validated data, write the save. **There is no merge and no "take the larger number"**, because a lower balance may be a real purchase. A test restores a cloud save with a lower balance and expects the lower balance.
+Restoring uses `Save.restore_progress`: reset progress, apply the validated data, write. **There is no merge and no "take the larger number"**, because a lower balance may be a real purchase.
 
-## 5. When a sync happens
+## 5. What counts as progress (`CloudSave.has_progress`)
 
-A small file beside the save, `starfall_save.cfg.cloud`, remembers the fingerprints (SHA-256 of the progress without its `saved_at` time) of the last state this device and the cloud agreed on, and when. On each sync:
+A save is "a fresh install" only if `has_progress` is false. That decides whether a cloud save may be restored silently, and whether an empty save may ever be uploaded. It checks every field of `Save.PROGRESS_KEYS`:
+
+| Counts as progress | Fields |
+|---|---|
+| Any value above a new player's | `salvage`, `parts`, `pilot_xp`, `best_score`, `endless_best_wave`, `expedition_wins`, `tier_unlocked`, `reroll_tokens`, `unlocked`, `ship` (not nova), `nova_mode` (not pulse) |
+| Anything in it | `star_mask`, `level_best`, `upgrades`, `mastery`, `paints`, `tutorial`, `achievements`, `codex`, `expedition`, `weekly_best`, `daily_best`, `equipped`, `tier_data`, `gear`, `blueprints`, `loadout`, `side_cleared`, `bosses_beaten`, `seen_unlocks`, `rift_claimed`, and `owned_ships` with more than one ship |
+| Only once the player has touched it | `contracts` (today's three contracts are generated at every launch: they count once one has progress, is done or is claimed), `stats` (the title screen mirrors `ships_owned`, `best_mastery`, `pilot_level`, `stars`, `side` and `tier_unlocked` into stats at every launch, so those keys never count; any other stat above zero does), `danger` (a completed contract or a remembered pick) |
+| Never | `gear_uid` (a counter that follows the gear list) |
+
+Generated or temporary data must not make a new install look played, or a second device would be asked a question instead of restoring. A test per field proves each meaningful one alone stops a save being taken for fresh, a test proves a new install with generated contracts and derived stats is still fresh, and **a test fails if a new key is added to `Save.PROGRESS_KEYS` without being classified here** (`CloudSave.GENERATED_KEYS` or `has_progress`).
+
+## 6. When a sync happens
+
+The sync record remembers the fingerprints of the last state this device and the cloud agreed on. On each sync:
 
 | Situation | Result |
 |---|---|
@@ -44,72 +58,120 @@ A small file beside the save, `starfall_save.cfg.cloud`, remembers the fingerpri
 | Only this device changed since the last sync | Upload |
 | Only the cloud changed (another device played) | Restore it, after keeping this device's old save in `starfall_save.cfg.before_cloud` |
 | Both changed, or never synced and both have progress | Ask the player: CHOOSE A SAVE |
-| This device has no progress but did before (erased) and the cloud has some | Ask. An empty save is never pushed silently, and never restored silently. |
+| This device has no progress but did before (erased) and the cloud has some | Ask. An empty save is never pushed silently, never restored silently. |
 | The cloud save is unreadable and this device has progress | Ask, offering only KEEP THIS DEVICE'S SAVE |
 | The cloud save is unreadable and this device is new | Error. Nothing is restored, nothing is uploaded. |
+| Google reports two versions of the cloud save | Error. See section 9. |
+| A different account is signed in, or the account cannot be confirmed | See section 8 |
 
-When it runs: at launch once Google Play Games reports signed in; after the local save changes (a 6 second debounce, so several saves in a row become one upload); not during a flight (`Cloud.hold`, released when the flight scene closes); at once when the app goes to the background; when the app comes back after a minute or more; and retrying after a failure at 15 s, 30 s, 1 min, 2 min, then every 5 min. Never per frame.
+When it runs: at launch once Google Play Games reports signed in; after the local save changes (6 second debounce, so several saves become one upload); not during a flight (`Cloud.hold`); at once when the app goes to the background; when the app returns after a minute or more; and retrying after a failure at 15 s, 30 s, 1 min, 2 min, then every 5 min. Never per frame. A conflict is not retried on a timer: only the player's Sync Now tries it again.
 
-Every request is asynchronous and has a 25 second timeout. A request that never answers becomes OFFLINE, the backend is told to forget it, and the next sync goes through. A late answer to an abandoned request is ignored.
+Every request is asynchronous with a 25 second timeout. Silence becomes OFFLINE, the backend is told to drop the request, and the next sync goes through. A late answer is ignored twice over: by an operation token in `Cloud` and by the adapter dropping its callbacks.
 
-## 6. Conflicts
+## 7. The player decides a disagreement
 
-The screen shows both saves (pilot level, salvage, stars, gear, time saved) and two buttons, each followed by what it does:
+CHOOSE A SAVE shows both saves (pilot level, salvage, stars, gear, time saved) and two buttons, each with what it does and a second tap to confirm:
 
-- **KEEP THIS DEVICE'S SAVE**: uploads this device's progress and replaces the cloud save. The cloud save it replaces is kept in `starfall_save.cfg.cloudconflict`.
-- **RESTORE CLOUD SAVE**: replaces this device's progress with the cloud save. This device's save is kept in `starfall_save.cfg.before_cloud` and `.cloudconflict`.
+- **KEEP THIS DEVICE'S SAVE** uploads this device's progress over the cloud save. The cloud save it replaces is kept in `starfall_save.cfg.cloudconflict`.
+- **RESTORE CLOUD SAVE** replaces this device's progress with the cloud save. This device's save is kept in `starfall_save.cfg.before_cloud` and `.cloudconflict`.
 
-Each needs a second tap on a confirmation naming the consequence. Nothing is changed until then. The kept files are not read by the game and are not deleted by it (they are for support or a manual recovery); the test runs delete their own.
+The kept files are never read by the game and never deleted by it (they are for support or a manual recovery).
 
-If Google reports that it settled a conflict itself while saving, the game does not trust the upload: it reads the cloud again and runs the table above.
+## 8. Which Google account (data safety)
 
-## 7. Uninstall and reinstall
+A cloud save belongs to one Google Play Games player. Without knowing which, switching accounts on a phone could upload one person's progress into another's cloud save, or replace it.
 
-Uninstalling removes the local save and the sync record. On the next install, once Google Play Games signs in, the game finds a cloud save, sees a new player with no progress and no sync record, and restores it without asking. If the player made progress on the new install before signing in, the two saves are compared and they are asked to choose.
+- **Identity.** Before every sync the backend confirms who is signed in. The adapter asks the plugin's `PlayGamesPlayersClient.load_current_player(true)` (a forced reload, so a cached previous player is never used) and reads `player_id`. The sync record stores only `SHA-256("starfall_salvage_pgs_account_v1:" + id)`. Google's `Player.getPlayerId()` is scoped to this game and is stable for the player; the game never receives a name, email or token.
+- **Uncertain identity means no sync.** If the player id is empty, missing or the check fails, nothing is read or written: the status is SYNC ERROR with "Could not confirm which Google Play Games account is signed in", and it retries on the normal schedule.
+- **First sync with an account** binds this device's record to it. An older record with no account (from before accounts were recorded) is not trusted: its fingerprints are dropped, so two saves with progress produce a question, never a silent upload or restore.
+- **A different account** than the bound one: nothing is uploaded, restored or written. `Cloud` reads the new account's cloud save (read-only apart from creating an empty snapshot, see section 11) and the profile shows ACCOUNT CHANGED with this device's save beside the new account's cloud save and three choices, each confirmed with a second tap where it changes something:
+  - **USE THIS DEVICE'S SAVE** carries this device's save to the new account, replacing whatever it had in the cloud (kept in `.cloudconflict`). Disabled when this device has no progress.
+  - **LOAD THIS ACCOUNT'S CLOUD SAVE** replaces this device's progress with the new account's (this device's save is kept in `.before_cloud` and `.cloudconflict`). Disabled when the account has none or it is unreadable.
+  - **PAUSE CLOUD SYNC** changes nothing and syncs nothing (SYNC PAUSED, with a button to choose again).
+  Until the player chooses, neither the local save nor the new account's cloud save is changed, and scheduled syncs, the flight-end sync and the app-resume sync do nothing.
+- **Switching back** to the bound account resumes normal syncing without a question. Signing out and signing in as the same account needs no decision.
+- **Any change of sign-in state** ends the session: the running request is abandoned, the backend drops its callbacks, scheduled work is cancelled, and pending decisions are forgotten. Late answers cannot change the new session, and signing in again starts a fresh operation.
 
-## 8. Setting up Google Play Games (not done: needs your accounts)
+## 9. Conflicts reported by Google: what the plugin really does
 
-Names in Play Console change; follow the current Google documentation for Play Games Services (PGS v2) alongside this list.
+Read from `SnapshotsProxy.kt` in v3.4.0:
 
-1. **Play Console**: create the app with package `com.starfall.salvage` (the package in `export_presets.cfg`; changing it later breaks the credentials below).
-2. **Play Games Services**: in the app's PGS configuration, create the game entry. This gives a **Game ID** (a numeric app id). Enable **Saved games** for it. Add your Google accounts as **testers** until the game is published.
-3. **Credentials**: add an Android OAuth client for the package, once for each signing certificate that will run the game. Each needs that certificate's **SHA-1**:
-   - *Debug* builds from Godot use the debug keystore: `keytool -list -v -keystore <path>\debug.keystore -alias androiddebugkey -storepass android`.
-   - *Release* builds signed with your upload key: `keytool -list -v -keystore <your release keystore> -alias <alias>`.
-   - *Play App Signing*: when the app is on Play, Google re-signs it. Copy the **App signing key certificate** SHA-1 from Play Console → App integrity, and add it as well. Without this the installed-from-Play build cannot sign in even though your release build can.
-4. **Plugin**: install `godot-play-game-services` (Asset Library or GitHub, version 3.4.0 was the one read for this work) into `res://addons/`, enable it in Project Settings → Plugins, install the **Android build template** (Project → Install Android Build Template), and use a **Gradle build** (`gradle_build/use_gradle_build=true`). The Release preset already has it. The Debug preset in `export_presets.cfg` does not: turn it on to test on a phone.
-5. **Game ID**: set it in the export preset options (the plugin's `godot_play_game_services/game_id` option). It is not a secret and ships inside the app, but keep it out of the repository if you prefer one build config per environment.
-6. **Check the merged manifest**: the preset has `permissions/internet=false` for the game's own use. The Play Games SDK needs network access and normally brings its own `INTERNET` and `ACCESS_NETWORK_STATE` through manifest merging. After the first export run `aapt dump permissions app.apk`. If `INTERNET` is missing, turn on the Internet permission in the preset. Update the Data Safety answers (see `docs/PRIVACY_POLICY.md`).
-7. **Never commit** keystores, their passwords, or any service-account JSON. The debug keystore password `android` in the preset is the standard public debug value. Nothing in the game needs a server secret: sign-in and Saved Games run through the installed Play Games app and Google's SDK.
+- `saveGame` opens the snapshot with `RESOLUTION_POLICY_HIGHEST_PROGRESS` and `loadGame` with `RESOLUTION_POLICY_MOST_RECENTLY_MODIFIED`. Google's documentation says a non-manual policy resolves conflicts itself, so the plugin's conflict branch should be rare. **That is unverified here.** The plugin's source does not rely on it: if `isConflict` is true it only emits `conflict_emitted` (with `origin` "SAVE" or "LOAD", `conflicting_snapshot` and `server_snapshot`) and **returns**. `game_saved` or `game_loaded` never follow.
+- The plugin has **no method to resolve a conflict**. Google's native `resolveConflict` is not exposed, and an unresolved conflict is not closed by the plugin.
+- Other gaps in the same file: `saveGame` emits `game_saved(true)` right after calling `commitAndClose`, without waiting for it to finish, and a failed `open` emits nothing at all (so a failed save is silence). A failed load emits nothing either, except a not-found status (which gives a null snapshot).
 
-`CloudSave.make_backend()` returns the Play Games adapter only when running on Android **and** the plugin's `PlayGamesSignInClient` and `PlayGamesSnapshotsClient` nodes exist with the methods the adapter calls. Anywhere else the game plays as a local guest.
+What this game does about it, in `cloud_play_games.gd`:
 
-## 9. What is verified and what is not
+- A conflict from a save **or** a load completes the pending request immediately, exactly once, as a failure of kind `conflict` that carries both snapshots' bytes. `Cloud` writes them to `starfall_save.cfg.cloudconflict.1` and `.2`, leaves the local save and the cloud untouched, and shows SYNC ERROR: "Google Play Games reported two different cloud versions of your save... This build cannot settle that." No timeout wait, no retry timer; Sync Now tries again.
+- A save is only reported as done after the snapshot has been read back and matches what was written. A mismatch is an error ("unverified"). Silence is covered by `Cloud`'s timeout.
+- Callbacks complete exactly once; `abort()` drops them; late answers after a conflict, a timeout or a sign-out are ignored. All of this is tested against the stand-in plugin.
 
-Verified by `tools/test_game.gd` (`_test_cloud_save`, `_test_cloud_sync`, `_test_cloud_profile`, all in the quick suite) with the mock service:
+**The limitation, stated plainly:** this plugin cannot resolve a conflict Google reports, so a conflict that does occur stays unresolved on Google's side, and the game can only preserve both versions and stop. If that proves common on a phone, the right fix is not to work around the plugin but to use a different backend:
 
-- Every progress key survives encode, decode and restore; settings are untouched; gear and equipment, pilot XP, mastery and ships come back.
-- Damaged, truncated, foreign, newer, checksum-broken and invalid blobs are refused (more than twenty cases); an older version is accepted and filled in.
-- New-install restore, guest upload, empty-cloud no-op, fast-forward from another device, lower balances restored as they are, and that a fresh default save never overwrites a cloud save.
-- Offline, failed upload, timeout and retry; several quick saves make one upload; no sync during a flight; a reported conflict triggers a re-read.
-- Conflicts: both choices, the kept loser files, an erased save, an unreadable cloud save, a newer cloud save.
-- The profile screen in each state, the text it shows, the two-tap confirmation, and that every new button is a full touch target (also in `tools/touch_audit.gd`).
-- Desktop: the game's own `Cloud` is a local guest and claims no cloud saving.
+> Write a small Godot Android plugin in Kotlin around `play-services-games-v2` that opens the snapshot with `RESOLUTION_POLICY_MANUAL`, resolves conflicts with `SnapshotsClient.resolveConflict` once the player (or `Cloud`) has chosen a version, only emits "saved" from the `commitAndClose` completion listener, emits failures instead of staying silent, and returns the current player id. `CloudSave.Backend` is the seam: a new adapter implementing `check_account`, `load_snapshot` and `save_snapshot` replaces `cloud_play_games.gd` without touching `Cloud` or the screens. This has **not** been written here: it cannot be built or tested without an Android SDK, and untested native save code is worse than none.
 
-**Not verified, and cannot be without your accounts and a phone:**
+Alternatively, keep the stock plugin and accept the limitation. Google also offers a snapshot selection UI (`show_saved_games`), which this game does not use.
 
-- That the plugin installs, exports and builds with Godot 4.7.2. Nothing in its documentation mentions 4.7; it has unresolved issues about snapshots and sign-in, and the maintainer has reported losing their Play developer account. If it does not build, the fallback is a minimal Kotlin Godot Android plugin around `play-services-games-v2` (`SnapshotsClient.open/commitAndClose`) exposing the same five calls the adapter uses (`is_authenticated`, `sign_in`, `load_game`, `save_game`, signals). The adapter would not change.
-- Whether sign-in is automatic at launch, what `snapshot.content` is at run time (the adapter accepts bytes, an array of ints or text), that `load_game(name, true)` returns an empty snapshot for a first-time player, and that a failed load emits a null snapshot rather than nothing (silence is covered by the timeout).
-- How the plugin settles a snapshot conflict. The adapter sends the write time as the snapshot's progress value so the newest write wins under the plugin's highest-progress rule, and the game re-reads afterwards, but this has not been observed.
-- Signing out of Google, switching Google accounts, airplane mode, Play App Signing, a second device, and Play's own save-slot size limits. Switching accounts is a known gap: the sync record does not know which account it belongs to, so after switching, this device's progress is compared with the new account's cloud save as if it were the same player's.
-- The ACCOUNT & CLOUD SAVE layout on a real phone. It was built and measured at the 720-unit layout width and checked in the touch audit, not photographed on a device.
+## 10. Installing and setting up (needs your accounts and an Android toolchain)
 
-## 10. Manual test plan for a phone
+Names in Play Console change; follow Google's current Play Games Services (PGS v2) documentation alongside this.
 
-1. Fresh debug install, signed in to a tester account. Open Pilot Profile: expect CONNECTING, then CLOUD SYNCED. Play a level. Return to the profile: expect SYNC PENDING then CLOUD SYNCED.
+1. **Play Console**: create the app with package `com.starfall.salvage` (the package in `export_presets.cfg`; changing it later breaks the credentials below). In its Play Games Services configuration create the game entry: this gives the **Game ID** (a numeric app id). Enable **Saved games**. Add your Google accounts as **testers** until the game is published.
+2. **Install the plugin** (v3.4.0 was read for this work). The tag ships only a debug build, `addons/GodotPlayGameServices/bin/debug/GodotPlayGameServices-debug.aar`; there is no release AAR in the repository, so for a release build either use a release from the plugin's GitHub releases or build it (`./gradlew assemble` in the plugin repository, which needs the Android SDK). The Kotlin source builds against the Godot library **4.5.1**, not 4.7.x: whether that AAR works with a 4.7.2 export template is **untested**. Copy the folder to `res://addons/GodotPlayGameServices/` and enable **GodotPlayGameServices** in Project Settings > Plugins.
+3. **Check what enabling it added.** The plugin's editor script registers one autoload, `GodotPlayGameServices="*res://addons/GodotPlayGameServices/scripts/autoloads/godot_play_game_services.gd"`, in `project.godot`, and an export plugin that adds `play-services-games-v2:21.0.0` and gson, the `com.google.android.gms.games.APP_ID` manifest entry, and the export option below. This repository does not add that autoload itself, because it does not exist until the plugin is installed. **Do not call `GodotPlayGameServices.initialize()` anywhere else:** `cloud_play_games.gd` does it (see below), and a second call returns an error.
+4. **Android build template and Gradle**: Project > Install Android Build Template, and use a Gradle build. The Release preset already has `gradle_build/use_gradle_build=true`; the Debug preset does not, so turn it on to test on a phone.
+5. **Game ID**: in the Android export preset set `godot_play_game_services/game_id` (the plugin writes it to `android/build/res/values/strings.xml`). It is not secret and ships inside the app. An empty value is printed as an error at export and then breaks sign-in.
+6. **Credentials** (Google Cloud / Play Games Services > Credentials): add an Android OAuth client for the package, once for each signing certificate that will run the game, each with that certificate's **SHA-1**:
+   - *Debug* builds use Godot's debug keystore (`%APPDATA%\Godot\keystores\debug.keystore`, alias `androiddebugkey`, password `android`): `keytool -list -v -keystore <path> -alias androiddebugkey -storepass android`.
+   - *Release* builds use your upload key: `keytool -list -v -keystore <release keystore> -alias <alias>`.
+   - *Play App Signing*: once on Play, Google re-signs the app. Add the **App signing key certificate** SHA-1 from Play Console > App integrity as well, or the Play-installed build cannot sign in even though your release build can.
+   Also configure the OAuth consent screen if Google asks for it.
+7. **Permissions**: the preset has `permissions/internet=false`. The Play Games SDK needs network access and normally brings `INTERNET` and `ACCESS_NETWORK_STATE` through manifest merging. After the first Gradle export run `aapt dump permissions app.apk` and, if `INTERNET` is missing, turn on the Internet permission in the preset. Update Data Safety (see `docs/PRIVACY_POLICY.md`).
+8. **Never commit** keystores, their passwords, or any service-account JSON. Nothing in the game needs a server secret.
+
+### How the game starts the plugin (`cloud_play_games.gd`)
+
+The v3 plugin has **one autoload** (`GodotPlayGameServices`). Its clients are not autoloads: `PlayGamesSignInClient`, `PlayGamesSnapshotsClient` and `PlayGamesPlayersClient` are plain Nodes, and each connects to the native plugin inside its own `_ready()`, **only if `android_plugin` already exists**. The autoload creates `android_plugin` only when `initialize()` is called, and calling it a second time returns `PLUGIN_NOT_FOUND`. So:
+
+1. `CloudSave.make_backend()` returns the adapter only when `available()`: running on Android, the `GodotPlayGameServices` autoload exists, the three client scripts exist, and the native `GodotPlayGameServices` singleton is registered (`Engine.has_singleton`). Otherwise the game plays as a local guest.
+2. `start()` calls `initialize()` (only while `android_plugin` is empty) and treats any result but OK as unavailable, again LOCAL GUEST.
+3. Only then it creates the three client Nodes and adds them under the `Cloud` autoload, where they live for the whole session. It checks they have the expected signals and methods (an incompatible plugin version means LOCAL GUEST, not a crash) and connects to them.
+4. The plugin makes no automatic sign-in check (the v3 README says so), so `is_authenticated()` is called explicitly. If nothing answers within 20 seconds the state becomes SYNC ERROR.
+
+This order is covered by the stand-in plugin in `tools/fake_pgs`, whose client Nodes wire themselves only if the native object already exists, as the real ones do.
+
+## 11. What is verified and what is not
+
+Executed (quick suite, `-- --test --quick`): **5572 checks, 0 failures** (the count varies by a few between runs, because some tests loop until a state is reached), including every cloud test below, run on Windows with Godot 4.7.2 headless.
+
+- Data: every progress key survives encode, decode and restore; settings are untouched; more than twenty kinds of damaged, foreign, newer or invalid blob are refused; older versions are accepted.
+- `has_progress`: each meaningful field alone, the generated data that must not count, and that every `PROGRESS_KEYS` entry is classified.
+- Sync (mock service): new-install restore, guest upload, fast-forward, lower balances restored as they are, erased saves, offline, failed uploads, timeouts, debounce, flight hold, both conflict choices and their kept files, an unreadable or newer cloud save, Google-reported conflicts from a save and from a load (both versions kept, no timeout wait, no overwrite, no timer retry).
+- Accounts (mock service): A to B with and without a cloud save, each choice and its kept files, pausing, switching back to A, signing out and in as the same account, a switch while a request is pending (late answer ignored), a switch nobody announced, an unknown identity (no sync, nothing recorded), an older sync record without an account.
+- Session cleanup: sign out while a load is pending and while a save is pending, then sign in again; a scheduled retry cancelled by sign-out; a sign-in check that never answers.
+- Plugin adapter (stand-in plugin): availability in six situations, initialize once, clients created after initialization and persistent, sign-in, forced player reload, the snapshot open/save/read-back sequence, a read-back mismatch, conflicts from SAVE and LOAD, exactly-once completion, silence and timeout, late answers, sign-out with a request pending, an empty player id.
+- The profile screen in every state, including ACCOUNT CHANGED, its three choices, the two-tap confirmation and full-size touch targets (also in `tools/touch_audit.gd`).
+- A mutation check, done once by hand and not part of the suite: disabling the account comparison and the conflict handler made the suite fail.
+
+**Not executed, and not verified:**
+
+- **Real Google Play Games sign-in and Saved Games have never been run.** Not on a phone, not in an emulator, not once.
+- **No Android build exists.** An Android debug export was attempted and failed immediately: there are no Android export templates for 4.7.2, no Android SDK (`platform-tools`, `build-tools`) or Java SDK path in Editor Settings, no Android build template in the project, and the plugin is not installed.
+- The stand-in plugin copies what the v3.4.0 wrappers do, but it is a copy, not the plugin. If the real wrappers differ from the source as read (for example how a `PackedByteArray` is assigned from the JSON content array, which the stand-in copies verbatim and which works in Godot 4.7.2 desktop), the adapter could differ.
+- That the 4.5.1-built plugin runs under a 4.7.x export template.
+- Whether Google ever actually reports a snapshot conflict under these policies, and what an unresolved one does to later opens of that snapshot.
+- That the read-back after a save sees the committed data: `commitAndClose` is not awaited by the plugin, so the adapter waits 0.8 s then reads the snapshot back. A mismatch is reported as an error and retried later, so the failure mode is a retry, not a false success. The delay is a guess.
+- `load_game(name, true)` creates an empty snapshot in an account that has none. The account-change screen reads the new account's cloud save this way, so merely signing in with a new account can create an empty `starfall_salvage_main` snapshot there. It contains nothing.
+- Whether `Player.getPlayerId()` is stable across reinstalls and devices for one player in this game (Google documents it so; it was not observed).
+- Play App Signing, a second device, airplane mode, and the layout on a real phone (the section was built at the 720-unit layout width and checked by the touch audit and screenshots in `screenshots/cloud-save/`).
+
+## 12. Manual test plan for a phone (once the plugin builds)
+
+1. Fresh debug install, signed in to a tester account. Open Pilot Profile: expect CONNECTING, then CLOUD SYNCED. Play a level: SYNC PENDING then CLOUD SYNCED.
 2. Uninstall, reinstall, sign in: progress returns without a question.
-3. Airplane mode, play a level: expect OFFLINE and an unsynced indicator. Turn it off and press Retry: expect CLOUD SYNCED.
-4. Two devices (or one device and a reinstall): play different progress on each while offline, bring both online: expect CHOOSE A SAVE with real numbers, both choices behaving as described in section 6.
-5. Sign out of Play Games: expect LOCAL GUEST and a Connect button, with progress intact.
-6. Install the Play-signed build from an internal testing track and repeat step 1 (this is the Play App Signing SHA-1 check).
-7. Read `adb logcat` for the plugin's errors, and confirm nothing prints a token.
+3. Airplane mode, play a level: OFFLINE and an unsynced indicator. Turn it off and press Retry: CLOUD SYNCED.
+4. Two devices, different progress on each while offline, both online: CHOOSE A SAVE with real numbers.
+5. Switch the phone to a second Google account in the Play Games app: ACCOUNT CHANGED, nothing changed on either side. Try each choice, then switch back to the first account.
+6. Sign out of Play Games: LOCAL GUEST and a Connect button, progress intact.
+7. Install the Play-signed build from an internal test track and repeat step 1 (the Play App Signing SHA-1 check).
+8. In `adb logcat`, watch for `SnapshotsProxy` "Conflict with id" lines, and confirm nothing prints a token or a player id.

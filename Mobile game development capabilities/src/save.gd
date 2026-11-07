@@ -98,7 +98,7 @@ func _exit_tree() -> void:
 
 ## Deletes a save file with its backup and temp copy.
 func remove_files(p: String) -> void:
-	for f in [p, p + ".bak", p + ".tmp", p + ".cloud", p + ".before_cloud", p + ".cloudconflict"]:
+	for f in [p, p + ".bak", p + ".tmp", p + ".cloud", p + ".before_cloud", p + ".cloudconflict", p + ".cloudconflict.1", p + ".cloudconflict.2"]:
 		DirAccess.remove_absolute(f)
 
 ## Test saves left behind by runs that crashed. A file whose process is still running is left alone.
@@ -112,7 +112,7 @@ func _remove_stale_test_files() -> void:
 			continue
 		var pid := 0
 		var stem := f
-		for suffix in [".bak", ".tmp", ".cloud", ".before_cloud", ".cloudconflict"]:
+		for suffix in [".bak", ".tmp", ".cloud", ".before_cloud", ".cloudconflict", ".cloudconflict.1", ".cloudconflict.2"]:
 			stem = stem.trim_suffix(suffix)
 		var bits := stem.get_basename().split("_")
 		if bits.size() > 3:
