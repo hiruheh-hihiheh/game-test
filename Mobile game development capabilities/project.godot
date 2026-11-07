@@ -24,6 +24,7 @@ Telemetry="*res://src/meta/telemetry.gd"
 Meta="*res://src/meta/meta.gd"
 Audio="*res://src/audio.gd"
 Fade="*res://src/fade.gd"
+Cloud="*res://src/meta/cloud_sync.gd"
 
 [display]
 

@@ -3,6 +3,9 @@ extends Node
 ## Saves are written to a temp file and swapped in, with the previous save kept as a backup,
 ## so a crash or a dead battery mid-write can never destroy a player's progress.
 
+## Emitted after every successful write of the save file. Cloud sync listens to it.
+signal saved
+
 const VERSION := 2
 const PATH := "user://starfall_save.cfg"
 const TEST_PREFIX := "user://starfall_test_save"
@@ -95,7 +98,7 @@ func _exit_tree() -> void:
 
 ## Deletes a save file with its backup and temp copy.
 func remove_files(p: String) -> void:
-	for f in [p, p + ".bak", p + ".tmp"]:
+	for f in [p, p + ".bak", p + ".tmp", p + ".cloud", p + ".before_cloud", p + ".cloudconflict"]:
 		DirAccess.remove_absolute(f)
 
 ## Test saves left behind by runs that crashed. A file whose process is still running is left alone.
@@ -108,9 +111,10 @@ func _remove_stale_test_files() -> void:
 		if not f.begins_with(prefix):
 			continue
 		var pid := 0
-		var bits := f.get_basename().split("_")
-		if f.ends_with(".bak") or f.ends_with(".tmp"):
-			bits = f.get_basename().get_basename().split("_")
+		var stem := f
+		for suffix in [".bak", ".tmp", ".cloud", ".before_cloud", ".cloudconflict"]:
+			stem = stem.trim_suffix(suffix)
+		var bits := stem.get_basename().split("_")
 		if bits.size() > 3:
 			pid = int(bits[bits.size() - 1])
 		if pid > 0 and OS.is_process_running(pid):
@@ -247,6 +251,7 @@ func save_data() -> void:
 		DirAccess.rename_absolute(path, path + ".bak")
 	DirAccess.rename_absolute(tmp, path)
 	_dirty = false
+	saved.emit()
 
 func _notification(what: int) -> void:
 	if what == NOTIFICATION_APPLICATION_PAUSED or what == NOTIFICATION_WM_CLOSE_REQUEST or what == NOTIFICATION_APPLICATION_FOCUS_OUT:
@@ -497,35 +502,10 @@ func haptic(ms: int) -> void:
 	if k > 0.0:
 		Input.vibrate_handheld(int(float(ms) * k))
 
-## Combines this save with one from another device, keeping the best of each field.
-func merge_remote(remote: Dictionary) -> void:
-	salvage = maxi(salvage, int(remote.get("salvage", 0)))
-	best_score = maxi(best_score, int(remote.get("best_score", 0)))
-	unlocked = maxi(unlocked, int(remote.get("unlocked", 1)))
-	endless_best_wave = maxi(endless_best_wave, int(remote.get("endless_best_wave", 0)))
-	parts = maxi(parts, int(remote.get("parts", 0)))
-	pilot_xp = maxi(pilot_xp, int(remote.get("pilot_xp", 0)))
-	tier_unlocked = maxi(tier_unlocked, int(remote.get("tier_unlocked", 0)))
-	for key in ["blueprints", "owned_ships", "side_cleared", "bosses_beaten", "seen_unlocks", "rift_claimed"]:
-		var mine: Array = get(key)
-		for item in remote.get(key, []):
-			if not item in mine:
-				mine.append(item)
-	var remote_stars: Dictionary = remote.get("star_mask", {})
-	for level in remote_stars:
-		star_mask[level] = int(star_mask.get(level, 0)) | int(remote_stars[level])
-	var theirs_done: Dictionary = (remote.get("danger", {}) as Dictionary).get("done", {})
-	if not danger.has("done"):
-		danger["done"] = {}
-	for id in theirs_done:
-		if Danger.has(str(id)):
-			danger.done[str(id)] = maxi(int(danger.done.get(str(id), 0)), int(theirs_done[id]))
-	for key in ["upgrades", "mastery", "level_best", "stats", "achievements"]:
-		var mine: Dictionary = get(key)
-		var theirs: Dictionary = remote.get(key, {})
-		for k in theirs:
-			if theirs[k] is int or theirs[k] is float:
-				mine[k] = maxf(float(mine.get(k, 0)), float(theirs[k]))
-			else:
-				mine[k] = theirs[k]
+## Replaces ALL progress with a payload that CloudSave.validate_progress has already accepted: a cloud restore.
+## Nothing is merged and no value is "kept if higher", because a lower balance may be a real purchase.
+## Settings stay as they are on this device. The caller backs up the old save first (see Cloud).
+func restore_progress(payload: Dictionary) -> void:
+	reset_progress()
+	from_dict(_copy(payload))
 	save_data()

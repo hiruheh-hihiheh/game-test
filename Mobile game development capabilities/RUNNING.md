@@ -42,6 +42,7 @@ On a fresh clone, or after deleting `.godot/`, you can import without opening th
 | [docs/DANGER_CONTRACTS.md](docs/DANGER_CONTRACTS.md) | Optional risk contracts: rules, payouts, where they work |
 | [docs/ROADMAP_NEXT.md](docs/ROADMAP_NEXT.md) | Designs for the next five features |
 | [docs/SAVES.md](docs/SAVES.md) | How saves load, migrate and fall back to the backup |
+| [docs/CLOUD_SAVE.md](docs/CLOUD_SAVE.md) | Google Play Games cloud save: design, setup, what is and is not tested |
 | [docs/BALANCE.md](docs/BALANCE.md) | Simulation results and tuning notes |
 | [docs/RELEASE_CHECKLIST.md](docs/RELEASE_CHECKLIST.md) | Steps to publish on Google Play |
 | [docs/DEVICE_TESTING.md](docs/DEVICE_TESTING.md) | What to check on real phones |

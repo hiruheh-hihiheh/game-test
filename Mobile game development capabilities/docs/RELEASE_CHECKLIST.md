@@ -51,9 +51,9 @@ Each has a clean seam, so adding it won't touch game code.
 
 | Service | Where it plugs in | Notes |
 |---|---|---|
-| Cloud save | `src/meta/cloud_save.gd`: implement `Backend` | Needs a Play Games plugin and an account. Merging is done and tested |
+| Cloud save | Built: `src/meta/cloud_sync.gd`, `cloud_save.gd`, `cloud_play_games.gd` | **Not tested on a device.** Needs the Play Games plugin, a Play Console game, OAuth clients with SHA-1s for debug, release and Play App Signing, and the Game ID. Steps and the phone test plan: [CLOUD_SAVE.md](CLOUD_SAVE.md) |
 | Analytics | `src/meta/telemetry.gd`: set `provider` | Must be opt-in, and needs Data Safety and privacy policy updates |
 | Crash reporting | Same `provider`, plus breadcrumbs in `user://breadcrumbs.log` | A session lock already detects unclean exits |
 | Leaderboards | Read `Save.best_score` and `Save.endless_best_wave` | Needs Play Games |
 
-Adding any of these needs the internet permission, which is currently off.
+Adding any of these needs the internet permission, which is currently off. Cloud save through Google Play Games also needs network access: check the merged manifest of the Gradle build (`aapt dump permissions`) and add the permission if the Play Games SDK did not bring it. Update the Data Safety form at the same time.

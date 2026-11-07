@@ -192,8 +192,12 @@ var ui: UILayer
 var materials := {}
 var add_mat: CanvasItemMaterial
 
+func _exit_tree() -> void:
+	Cloud.hold(false)
+
 func _ready() -> void:
 	get_tree().set_quit_on_go_back(false)
+	Cloud.hold(true)  # cloud sync waits while a flight is on
 	_measure()
 	UIArt.focus(["loot"])
 	var sess: Dictionary = Save.session

@@ -70,7 +70,7 @@ Wave language: `kind form count [delay or elite mod]`, joined by `;`. Events sta
 | `src/combat/` | Bullets, effects, hazards, HUD, bosses |
 | `src/menus/` | Map, Hangar, Ops, Expedition, Settings |
 | `src/data/` | All content |
-| `src/meta/` | Progress logic, Expedition, telemetry, cloud save seam |
+| `src/meta/` | Progress logic, Expedition, telemetry, cloud save (`Cloud` autoload, `docs/CLOUD_SAVE.md`) |
 | `src/save.gd` | Saves, migration, merging |
 | `tools/` | Art, audio and font generators, tests, benchmark |
 

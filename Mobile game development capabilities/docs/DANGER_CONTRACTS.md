@@ -64,7 +64,7 @@ Change numbers in `Danger.LIST` and the caps at the top of `danger.gd`. Check wi
 
 ## Tests
 
-`_test_danger` in `tools/test_game.gd` covers: contract data, selection rules and every legal pair, payout scaling and caps, daily featuring, save and load, cloud merge, each contract's effect in a real run, a won run paying exactly what the card said, a lost run paying nothing, the Rift milestone and payout, and the briefing, Expedition and Ops screens.
+`_test_danger` in `tools/test_game.gd` covers: contract data, selection rules and every legal pair, payout scaling and caps, daily featuring, save and load, each contract's effect in a real run, a won run paying exactly what the card said, a lost run paying nothing, the Rift milestone and payout, and the briefing, Expedition and Ops screens.
 
 ## Balance notes (bot simulation, not people)
 

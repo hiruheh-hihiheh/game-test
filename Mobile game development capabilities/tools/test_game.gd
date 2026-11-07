@@ -85,6 +85,7 @@ func _run() -> void:
 	await _test_danger()
 	await _test_glass_ui()
 	await _test_pilot_profile()
+	await _test_cloud_save()
 	await _test_glass_hud()
 	await _test_touch_targets()
 	await _test_expedition()
@@ -325,11 +326,6 @@ func _test_save_roundtrip() -> void:
 	check(c.done, "contract completes")
 	var before: int = save.salvage
 	check(meta.claim_contract(0) and save.salvage > before, "contract pays out")
-	var cloud = load("res://src/meta/cloud_save.gd")
-	var blob: String = cloud.export_blob()
-	save.salvage = 0
-	check(cloud.import_blob(blob) and save.salvage > 0, "cloud blob round trip keeps the best values")
-	save.salvage = 0
 	print("save ok")
 
 func _test_menus() -> void:
@@ -587,9 +583,6 @@ func _test_danger() -> void:
 	check(save.danger.is_empty(), "a fresh player has no contract history")
 	check(save.load_data() == "main", "the contract save loads")
 	check(save.danger.done.rush == 3 and save.danger.done.silence == 1 and D.recall("endless") == ["silence", "rush"], "contract history survives a save and load")
-	save.danger = {"done": {"rush": 1}}
-	save.merge_remote({"danger": {"done": {"rush": 5, "cold": 2, "bogus": 7}}})
-	check(save.danger.done.rush == 5 and save.danger.done.cold == 2 and not save.danger.done.has("bogus"), "cloud merge keeps the best counts and ignores unknown contracts")
 	save.remove_files(p)
 	save.path = keep_path
 	save.reset_progress()
@@ -965,6 +958,39 @@ func _collect_targets() -> Array:
 	for i in range(5):
 		await process_frame
 	await scrolled.call("profile", [0, 700, 1400, 2100])
+	# The cloud section with a service signed in, and with a save to choose: its buttons are touch targets too.
+	var cloud_live = root.get_node("Cloud")
+	var cloud_plain = cloud_live.backend
+	var cloud_mock = load("res://tools/mock_cloud.gd").new()
+	var cloud_lib = load("res://src/meta/cloud_save.gd")
+	cloud_mock.set_auth(cloud_lib.Auth.SIGNED_IN)
+	cloud_live.forget_state()
+	cloud_live.debounce = 60.0
+	cloud_live.use(cloud_mock)
+	for i in range(30):
+		await process_frame
+	menu.go("profile")
+	for i in range(5):
+		await process_frame
+	await scrolled.call("profile/cloud", [0])
+	var other_side: Dictionary = save.to_dict()
+	other_side.salvage = 4
+	cloud_mock.set_blob(cloud_lib.encode(other_side))
+	save.salvage += 5
+	save.save_data()
+	cloud_live.sync_now()
+	for i in range(30):
+		await process_frame
+	await scrolled.call("profile/choose", [0, 400])
+	menu.pages.profile.on_ui("cloud_keep")
+	for i in range(3):
+		await process_frame
+	await scrolled.call("profile/confirm", [0, 400])
+	menu.pages.profile.on_ui("cloud_cancel")
+	cloud_live.use(cloud_plain)
+	cloud_live.forget_state()
+	cloud_live.debounce = cloud_live.DEBOUNCE
+	menu.go("profile")
 	save.map_sector = 3
 	menu.go("map")
 	for i in range(4):
@@ -1677,6 +1703,595 @@ func _test_pilot_profile() -> void:
 	save.parts = 0
 	save.gear = []
 	print("pilot profile ok")
+
+# ---------- Cloud save ----------
+
+var _cloud_mock_script
+var _cloud_script
+
+## A complete late-game save: every progress key holds something other than a new player's value.
+func _cloud_rich_save() -> void:
+	save.reset_progress()
+	save.salvage = 12345
+	save.parts = 321
+	save.pilot_xp = 98765
+	save.unlocked = 40
+	save.best_score = 777000
+	save.endless_best_wave = 17
+	for n in range(1, 41):
+		save.star_mask[n] = 7 if n % 3 != 0 else 3
+	save.level_best = {5: 12000, 9: 40500}
+	save.upgrades = {"hull": 3, "damage": 2}
+	save.owned_ships = ["nova", "interceptor", "lancer"]
+	save.ship = "interceptor"
+	save.blueprints = ["bp_aegis"]
+	save.nova_mode = "singularity"
+	save.loadout = ["a", "b"]
+	save.mastery = {"interceptor": 1600, "nova": 400}
+	save.paints = {"nova": "ember"}
+	save.tutorial = {"move": true, "card": true}
+	save.stats = {"kill": 1832, "boss": 9, "clear": 74, "best_combo": 67, "gear_found": 58, "legendary": 3}
+	save.side_cleared = [101, 102]
+	save.bosses_beaten = [1, 2]
+	save.achievements = {"first_kill": true, "kill_1k": true}
+	save.codex = {"fighter": 3}
+	save.contracts = {"day": 20000, "done": [1]}
+	save.expedition = {"depth": 2}
+	save.weekly_best = {"w1": 900}
+	save.daily_best = {"d1": 400}
+	save.reroll_tokens = 3
+	save.expedition_wins = 4
+	save.seen_unlocks = ["u1"]
+	save.rift_claimed = [5, 10]
+	save.tier_unlocked = 2
+	save.tier_data = {1: {"stars": {5: 3}}}
+	save.danger = {"done": {"rush": 2}, "last": {}}
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 99
+	for slot in ["weapon", "reactor", "plating", "weapon"]:
+		var item: Dictionary = gear_db.generate(rng, 30.0, gear_db.EPIC, slot, 0)
+		item.lvl = 3
+		save.add_gear(item)
+	for it in save.gear:
+		if save.equipped_uid("interceptor", str(it.slot)) == 0:
+			save.equip("interceptor", int(it.uid))
+	save.save_data()
+
+func _cloud_hash(d: Dictionary) -> String:
+	return _cloud_script_class().progress_hash(d)
+
+func _cloud_script_class():
+	return load("res://src/meta/cloud_save.gd")
+
+## A Cloud orchestrator of its own, wired to `mock`, with a short debounce so tests need not wait.
+func _make_cloud(mock, signed_in := true):
+	var cloud = _cloud_script.new()
+	cloud.autostart = false
+	cloud.debounce = 0.05
+	cloud.timeout = 1.0
+	root.add_child(cloud)
+	cloud.forget_state()
+	if signed_in:
+		mock.set_auth(_cloud_script_class().Auth.SIGNED_IN)
+	cloud.use(mock)
+	return cloud
+
+## Waits until the orchestrator has nothing running and nothing scheduled.
+func _cloud_settle(cloud, max_frames := 900) -> void:
+	for i in range(max_frames):
+		await process_frame
+		if i > 3 and not cloud.busy and (cloud._timer.is_stopped() or cloud._fail_kind != ""):
+			break
+	for i in range(3):
+		await process_frame
+
+func _free_cloud(cloud) -> void:
+	cloud.queue_free()
+	await process_frame
+
+func _fresh_install() -> void:
+	save.reset_progress()
+	save.remove_files(save.path)
+	save.save_data()
+
+func _cloud_no_progress_changes(before: Dictionary, what: String) -> void:
+	check(_cloud_hash(save.to_dict()) == _cloud_hash(before), what)
+
+func _test_cloud_save() -> void:
+	var CS = _cloud_script_class()
+	_cloud_mock_script = load("res://tools/mock_cloud.gd")
+	_cloud_script = load("res://src/meta/cloud_sync.gd")
+	var saved_opt: Dictionary = save.opt.duplicate()
+	var saved_dict: Dictionary = save.to_dict()
+	# --- The blob holds every progress key and no settings ---
+	_cloud_rich_save()
+	var rich: Dictionary = save.to_dict()
+	for key in save.PROGRESS_KEYS:
+		check(rich.has(key), "to_dict holds %s" % key)
+	var blob: PackedByteArray = CS.encode(rich)
+	var dec: Dictionary = CS.decode(blob)
+	check(bool(dec.ok), "a full save encodes and decodes (%s)" % str(dec.get("error", "")))
+	for key in save.PROGRESS_KEYS:
+		check((dec.data as Dictionary).has(key), "the cloud copy holds %s" % key)
+		check(str(dec.data.get(key)) == str(rich.get(key)), "the cloud copy of %s is unchanged" % key)
+	check(not (dec.data as Dictionary).has("opt") and not (dec.data as Dictionary).has("settings"), "settings are not part of the cloud save")
+	check(CS.progress_hash(dec.data) == CS.progress_hash(rich), "decoding gives back the same progress")
+	check(CS.has_progress(rich) and not CS.has_progress(CS.migrate({"version": 2})), "has_progress tells a played save from an empty one")
+	check(CS.SNAPSHOT_NAME == "starfall_salvage_main", "one primary snapshot name")
+	var s: Dictionary = CS.summarize(rich)
+	check(int(s.salvage) == 12345 and int(s.gear) == 4 and int(s.ships) == 3 and int(s.stars) > 80 and int(s.level) >= 1, "the conflict summary is real")
+	# --- Restoring replaces everything, and leaves the settings alone ---
+	save.opt.music_volume = 0.33
+	save.reset_progress()
+	save.save_data()
+	check(save.salvage == 0 and save.gear.is_empty(), "the test save was wiped")
+	save.restore_progress(dec.data)
+	check(CS.progress_hash(save.to_dict()) == CS.progress_hash(rich), "a restore brings back every key")
+	check(save.gear.size() == 4 and save.equipped.has("interceptor") and (save.equipped.interceptor as Dictionary).size() == 3, "gear and what is equipped come back")
+	check(save.pilot_xp == 98765 and int(save.mastery.interceptor) == 1600 and save.ship == "interceptor" and save.owned_ships.size() == 3, "pilot XP, mastery and ships come back")
+	check(is_equal_approx(float(save.opt.music_volume), 0.33), "a restore does not touch the settings")
+	# --- A restore replaces, it never takes the larger number ---
+	var spent: Dictionary = CS.decode(CS.encode(rich)).data.duplicate(true)
+	spent.salvage = 40
+	spent.parts = 1
+	save.restore_progress(spent)
+	check(save.salvage == 40 and save.parts == 1 and save.pilot_xp == 98765, "a lower balance from the cloud is restored as it is (a real purchase)")
+	save.restore_progress(rich)
+	# --- Damaged, hostile and foreign data is refused ---
+	var bad_cases := {
+		"empty": PackedByteArray(),
+		"noise": PackedByteArray([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]),
+		"truncated": blob.slice(0, blob.size() / 2),
+		"not a dictionary": var_to_bytes([1, 2, 3]),
+		"not an envelope": var_to_bytes({"hello": "world"}),
+		"too large": PackedByteArray(),
+	}
+	bad_cases["too large"].resize(CS.MAX_BYTES + 1)
+	for name in bad_cases:
+		var r: Dictionary = CS.decode(bad_cases[name])
+		check(not bool(r.ok), "decode refuses %s" % name)
+	var flipped := blob.duplicate()
+	flipped[flipped.size() - 5] = flipped[flipped.size() - 5] ^ 0xFF
+	check(not bool(CS.decode(flipped).ok), "decode refuses a blob with one changed byte")
+	var env_of := func(mutate: Callable) -> PackedByteArray:
+		var env: Dictionary = JSON.parse_string(blob.get_string_from_utf8())
+		mutate.call(env)
+		return JSON.stringify(env).to_utf8_buffer()
+	check(str(CS.decode(env_of.call(func(e): e["game"] = "other_game")).code) == "game", "decode refuses another game's save")
+	check(str(CS.decode(env_of.call(func(e): e["format"] = 99)).code) == "newer", "decode refuses a newer blob format")
+	check(str(CS.decode(env_of.call(func(e): e["checksum"] = "00")).code) == "checksum", "decode refuses a wrong checksum")
+	var rewrap := func(mutate: Callable) -> PackedByteArray:
+		var data: Dictionary = rich.duplicate(true)
+		mutate.call(data)
+		return CS.encode(data)
+	var invalid := {
+		"a save from a newer game": rewrap.call(func(d): d["version"] = 99),
+		"a negative balance": rewrap.call(func(d): d["salvage"] = -5),
+		"a balance that is not a number": rewrap.call(func(d): d["salvage"] = "lots"),
+		"an impossible level count": rewrap.call(func(d): d["unlocked"] = 9999),
+		"an unknown ship": rewrap.call(func(d): d["ship"] = "death_star"),
+		"a ship that is not owned": rewrap.call(func(d): d["ship"] = "warden"),
+		"a repeated gear id": rewrap.call(func(d): d["gear"] = [d.gear[0], d.gear[0]]),
+		"a gear item in an unknown slot": rewrap.call(func(d): d.gear[0]["slot"] = "cupholder"),
+		"a gear item above its level cap": rewrap.call(func(d): d.gear[0]["lvl"] = 500),
+		"a gear item with an unknown stat": rewrap.call(func(d): d.gear[0]["aff"] = [{"k": "godmode", "r": 1.0}]),
+		"upgrades of the wrong type": rewrap.call(func(d): d["upgrades"] = {"hull": "max"}),
+		"a missing key": rewrap.call(func(d): d.erase("star_mask")),
+		"stars of the wrong type": rewrap.call(func(d): d["star_mask"] = [1, 2]),
+	}
+	for name in invalid:
+		var r2: Dictionary = CS.decode(invalid[name])
+		check(not bool(r2.ok) and str(r2.code) in ["invalid", "newer"], "decode refuses %s (%s)" % [name, str(r2.get("code"))])
+	# --- An older save is accepted and filled in ---
+	var v1 := {"version": 1, "unlocked": 5, "salvage": 70, "star_mask": {1: 7}, "upgrades": {}, "ship": "nova", "owned_ships": ["nova"]}
+	var v1r: Dictionary = CS.decode(CS.encode(v1))
+	check(bool(v1r.ok), "a version 1 cloud save is accepted (%s)" % str(v1r.get("errors")))
+	if bool(v1r.ok):
+		save.restore_progress(v1r.data)
+		check(save.unlocked == 5 and save.salvage == 70 and save.pilot_xp == 0 and save.gear.is_empty() and save.nova_mode == "pulse", "missing keys come back as a new player's values")
+	save.opt = saved_opt
+	print("cloud data ok")
+	await _test_cloud_sync(saved_dict)
+
+func _read_blob(p: String) -> PackedByteArray:
+	return FileAccess.get_file_as_bytes(p)
+
+func _test_cloud_sync(original: Dictionary) -> void:
+	var CS = _cloud_script_class()
+	var St = CS.Status
+	var side_files := [save.path + ".cloud", save.path + ".before_cloud", save.path + ".cloudconflict"]
+	# --- A new install restores the cloud save without asking ---
+	_cloud_rich_save()
+	var rich: Dictionary = save.to_dict()
+	var rich_blob: PackedByteArray = CS.encode(rich)
+	_fresh_install()
+	var mock = _cloud_mock_script.new()
+	mock.set_blob(rich_blob)
+	var cloud = _make_cloud(mock)
+	await _cloud_settle(cloud)
+	check(CS.progress_hash(save.to_dict()) == CS.progress_hash(rich), "a fresh install restores the cloud save")
+	check(cloud.status() == St.SYNCED and cloud.conflict.is_empty() and not cloud.pending, "and shows CLOUD SYNCED with no question asked")
+	check(mock.saves == 0 and mock.loads >= 1 and mock.last_name == CS.SNAPSHOT_NAME, "restoring never writes to the cloud")
+	check(cloud.last_sync > 0, "and records when it synced")
+	# The state file holds fingerprints and a time. No account data, no tokens.
+	var state := ConfigFile.new()
+	check(state.load(save.path + ".cloud") == OK and state.get_sections() == PackedStringArray(["sync"]) and state.get_section_keys("sync").size() == 3, "the sync record holds only fingerprints and a time")
+	var save_text := FileAccess.get_file_as_string(save.path)
+	for word in ["oauth", "access_token", "id_token", "bearer", "password"]:
+		check(not word in save_text.to_lower(), "the save file holds no %s" % word)
+	# --- Fast-forward: another device spent salvage, this one did not change ---
+	var other: Dictionary = save.to_dict()
+	other.salvage = 100
+	other.parts = 2
+	mock.set_blob(CS.encode(other))
+	cloud.sync_now()
+	await _cloud_settle(cloud)
+	check(save.salvage == 100 and save.parts == 2 and save.pilot_xp == 98765, "a lower balance from another device is restored, not replaced by the larger number")
+	check(FileAccess.file_exists(save.path + ".before_cloud") and cloud.status() == St.SYNCED, "the old save was kept in a backup file first")
+	await _free_cloud(cloud)
+	# --- Guest progress is uploaded ---
+	_cloud_rich_save()
+	rich = save.to_dict()
+	for f in side_files:
+		DirAccess.remove_absolute(f)
+	mock = _cloud_mock_script.new()
+	cloud = _make_cloud(mock)
+	await _cloud_settle(cloud)
+	check(mock.exists and mock.saves == 1, "local progress with an empty cloud is uploaded once")
+	check(bool(CS.decode(mock.blob).ok) and CS.progress_hash(CS.decode(mock.blob).data) == CS.progress_hash(rich), "and what was uploaded is the complete save")
+	check(mock.last_name == CS.SNAPSHOT_NAME and "Pilot level" in mock.last_description and mock.last_progress > 1000000000, "with one snapshot name, a description and the write time as progress")
+	check(cloud.status() == St.SYNCED and not cloud.pending and FileAccess.file_exists(save.path), "the local save stays")
+	var guest_hash: String = CS.progress_hash(save.to_dict())
+	# --- Several saves close together make one upload ---
+	save.salvage += 10
+	save.save_data()
+	save.salvage += 10
+	save.save_data()
+	save.salvage += 10
+	save.save_data()
+	check(cloud.pending and cloud.status() == St.PENDING, "unsynced changes show as pending")
+	await _cloud_settle(cloud)
+	check(mock.saves == 2 and CS.progress_hash(CS.decode(mock.blob).data) == CS.progress_hash(save.to_dict()), "three quick saves became one upload (%d uploads)" % mock.saves)
+	check(cloud.status() == St.SYNCED and not cloud.pending, "and the page is synced again")
+	# --- Nothing syncs during a flight ---
+	cloud.hold(true)
+	save.salvage += 5
+	save.save_data()
+	await create_timer(0.4).timeout
+	check(mock.saves == 2 and cloud.pending, "a held sync waits")
+	cloud.hold(false)
+	check(not cloud._timer.is_stopped() and cloud._timer.time_left <= 2.01, "and is scheduled when the flight ends")
+	cloud.sync_now()
+	await _cloud_settle(cloud)
+	check(mock.saves == 3 and not cloud.pending, "and then goes through")
+	# --- Google reports a conflict while saving ---
+	save.salvage += 7
+	save.save_data()
+	mock.conflict_flag = true
+	var loads_before: int = mock.loads
+	await _cloud_settle(cloud)
+	check(mock.loads >= loads_before + 2 and cloud.status() == St.SYNCED, "after a reported conflict the cloud is read again before trusting the upload")
+	await _free_cloud(cloud)
+	# --- Offline: nothing is lost, and the upload happens later ---
+	_cloud_rich_save()
+	rich = save.to_dict()
+	for f in side_files:
+		DirAccess.remove_absolute(f)
+	mock = _cloud_mock_script.new()
+	mock.offline = true
+	cloud = _make_cloud(mock)
+	await _cloud_settle(cloud)
+	check(cloud.status() == St.OFFLINE and cloud.pending and not mock.exists, "offline shows OFFLINE, keeps the changes pending and writes nothing")
+	check(CS.progress_hash(save.to_dict()) == CS.progress_hash(rich) and FileAccess.file_exists(save.path), "and the local save is untouched")
+	check("safe on this device" in cloud.last_error, "the message says progress is safe")
+	mock.offline = false
+	cloud.sync_now()
+	await _cloud_settle(cloud)
+	check(mock.exists and cloud.status() == St.SYNCED and not cloud.pending, "back online it uploads and shows CLOUD SYNCED")
+	await _free_cloud(cloud)
+	# --- A failed upload keeps the changes pending ---
+	mock = _cloud_mock_script.new()
+	mock.fail_save = "error"
+	for f in side_files:
+		DirAccess.remove_absolute(f)
+	cloud = _make_cloud(mock)
+	await _cloud_settle(cloud)
+	check(cloud.status() == St.ERROR and cloud.pending and not mock.exists, "a failed upload shows SYNC ERROR and stays pending")
+	check(CS.progress_hash(save.to_dict()) == CS.progress_hash(rich), "the local progress is exactly as it was")
+	cloud.sync_now()
+	await _cloud_settle(cloud)
+	check(cloud.status() == St.SYNCED and mock.exists, "a retry succeeds")
+	# --- A request that never answers times out and does not block the next one ---
+	cloud.timeout = 0.3
+	mock.silent = true
+	save.salvage += 1
+	save.save_data()
+	await _cloud_settle(cloud)
+	check(cloud.status() == St.OFFLINE and not cloud.busy and cloud.pending, "a silent cloud times out as OFFLINE")
+	cloud.sync_now()
+	await _cloud_settle(cloud)
+	check(cloud.status() == St.SYNCED, "and the next sync goes through")
+	await _free_cloud(cloud)
+	# --- Two devices changed: the player decides ---
+	_cloud_rich_save()
+	for f in side_files:
+		DirAccess.remove_absolute(f)
+	mock = _cloud_mock_script.new()
+	cloud = _make_cloud(mock)
+	await _cloud_settle(cloud)
+	var cloud_side: Dictionary = save.to_dict()
+	cloud_side.salvage = 999
+	cloud_side.pilot_xp = 100000
+	mock.set_blob(CS.encode(cloud_side))
+	save.salvage = 5
+	save.save_data()
+	var saves_before: int = mock.saves
+	await _cloud_settle(cloud)
+	check(cloud.status() == St.CONFLICT and not cloud.conflict.is_empty(), "both sides changed: CHOOSE A SAVE")
+	check(mock.saves == saves_before and save.salvage == 5, "nothing was overwritten while waiting")
+	check(int(cloud.conflict.local.salvage) == 5 and int(cloud.conflict.cloud.salvage) == 999, "the choice shows both saves")
+	cloud.sync_now()
+	await _cloud_settle(cloud)
+	check(cloud.status() == St.CONFLICT and mock.saves == saves_before, "syncing again does not decide for the player")
+	var restored_flag := [false]
+	cloud.restored.connect(func(): restored_flag[0] = true)
+	cloud.keep_local()
+	await _cloud_settle(cloud)
+	check(cloud.status() == St.SYNCED and int(CS.decode(mock.blob).data.salvage) == 5, "KEEP THIS DEVICE'S SAVE uploads this device's save")
+	check(bool(CS.decode(_read_blob(save.path + ".cloudconflict")).ok) and int(CS.decode(_read_blob(save.path + ".cloudconflict")).data.salvage) == 999, "and the replaced cloud save is kept in a file")
+	# The other way round.
+	cloud_side = save.to_dict()
+	cloud_side.salvage = 777
+	mock.set_blob(CS.encode(cloud_side))
+	save.salvage = 6
+	save.save_data()
+	await _cloud_settle(cloud)
+	check(cloud.status() == St.CONFLICT, "a second disagreement is a conflict again")
+	cloud.restore_cloud()
+	await _cloud_settle(cloud)
+	check(save.salvage == 777 and cloud.status() == St.SYNCED and restored_flag[0], "RESTORE CLOUD SAVE brings back the cloud save")
+	check(int(CS.decode(_read_blob(save.path + ".cloudconflict")).data.salvage) == 6 and FileAccess.file_exists(save.path + ".before_cloud"), "and this device's save is kept in files")
+	await _free_cloud(cloud)
+	# --- A save erased on this device is never pushed over the cloud, and never restored silently ---
+	_cloud_rich_save()
+	for f in side_files:
+		DirAccess.remove_absolute(f)
+	mock = _cloud_mock_script.new()
+	cloud = _make_cloud(mock)
+	await _cloud_settle(cloud)
+	var cloud_hash_before: String = CS.progress_hash(CS.decode(mock.blob).data)
+	save.reset_progress()
+	save.save_data()
+	saves_before = mock.saves
+	await _cloud_settle(cloud)
+	check(cloud.status() == St.CONFLICT and mock.saves == saves_before and not CS.has_progress(save.to_dict()), "an erased save asks first and uploads nothing")
+	check(CS.progress_hash(CS.decode(mock.blob).data) == cloud_hash_before, "the cloud save is untouched")
+	await _free_cloud(cloud)
+	# --- A fresh install with an empty cloud uploads nothing ---
+	_fresh_install()
+	for f in side_files:
+		DirAccess.remove_absolute(f)
+	mock = _cloud_mock_script.new()
+	cloud = _make_cloud(mock)
+	await _cloud_settle(cloud)
+	check(mock.saves == 0 and not mock.exists and cloud.status() == St.SYNCED, "an empty new game does not create a cloud save")
+	await _free_cloud(cloud)
+	# --- Unreadable or foreign cloud data never replaces a save ---
+	for case in ["noise", "newer"]:
+		var junk := PackedByteArray([9, 9, 9, 9, 9, 9, 9, 9])
+		if case == "newer":
+			var future: Dictionary = rich.duplicate(true)
+			future["version"] = 99
+			junk = CS.encode(future)
+		_cloud_rich_save()
+		for f in side_files:
+			DirAccess.remove_absolute(f)
+		var local_before: Dictionary = save.to_dict()
+		mock = _cloud_mock_script.new()
+		mock.set_blob(junk)
+		cloud = _make_cloud(mock)
+		await _cloud_settle(cloud)
+		check(cloud.status() == St.CONFLICT and not str(cloud.conflict.bad).is_empty() and (cloud.conflict.cloud as Dictionary).is_empty(), "%s cloud data: the screen says it is unreadable" % case)
+		cloud.restore_cloud()
+		await _cloud_settle(cloud)
+		check(CS.progress_hash(save.to_dict()) == CS.progress_hash(local_before) and mock.saves == 0, "%s cloud data: it cannot be restored and nothing was uploaded" % case)
+		cloud.keep_local()
+		await _cloud_settle(cloud)
+		check(bool(CS.decode(mock.blob).ok) and cloud.status() == St.SYNCED, "%s cloud data: the player may replace it with this device's save" % case)
+		await _free_cloud(cloud)
+		_fresh_install()
+		for f in side_files:
+			DirAccess.remove_absolute(f)
+		mock = _cloud_mock_script.new()
+		mock.set_blob(junk)
+		cloud = _make_cloud(mock)
+		await _cloud_settle(cloud)
+		check(cloud.status() == St.ERROR and mock.saves == 0 and not CS.has_progress(save.to_dict()), "%s cloud data on a new install is an error, not a restore" % case)
+		await _free_cloud(cloud)
+	# --- Sign-in comes and goes ---
+	_cloud_rich_save()
+	for f in side_files:
+		DirAccess.remove_absolute(f)
+	mock = _cloud_mock_script.new()
+	mock.set_auth(CS.Auth.CHECKING)
+	cloud = _make_cloud(mock, false)
+	await process_frame
+	check(cloud.status() == St.CONNECTING and mock.loads == 0, "checking sign-in shows CONNECTING and syncs nothing")
+	mock.set_auth(CS.Auth.SIGNED_IN)
+	await _cloud_settle(cloud)
+	check(cloud.status() == St.SYNCED and mock.exists, "signing in syncs")
+	mock.set_auth(CS.Auth.SIGNED_OUT)
+	await process_frame
+	check(cloud.status() == St.GUEST and cloud.status_label() == "LOCAL GUEST" and CS.progress_hash(save.to_dict()) == CS.progress_hash(rich), "signing out returns to LOCAL GUEST and keeps the local save")
+	await _free_cloud(cloud)
+	# --- Desktop and builds without the plugin play as a local guest ---
+	var plain = CS.make_backend()
+	check(not plain.available() and plain.auth == CS.Auth.UNAVAILABLE, "this build has no cloud service")
+	var answered := [{}]
+	plain.load_snapshot(CS.SNAPSHOT_NAME, func(r): answered[0] = r)
+	await process_frame
+	check(not bool(answered[0].get("ok", true)) and str(answered[0].get("kind")) == "unavailable", "a missing service answers 'unavailable', it does not pretend")
+	var live = root.get_node("Cloud")
+	check(live.status() == St.GUEST and live.status_label() == "LOCAL GUEST" and not live.signed_in(), "the game's own Cloud runs as a local guest here")
+	check("Android" in live.account_text() and not "synced" in live.account_text().to_lower(), "and does not claim cloud saving on desktop")
+	var before_live: Dictionary = save.to_dict()
+	live.sync_now()
+	await process_frame
+	check(not live.busy and CS.progress_hash(save.to_dict()) == CS.progress_hash(before_live), "Sync Now does nothing without a service")
+	await _test_cloud_profile(rich)
+	# --- Put the test save back ---
+	for f in side_files:
+		DirAccess.remove_absolute(f)
+	save.restore_progress(original)
+	print("cloud sync ok")
+
+## The Pilot Profile's ACCOUNT & CLOUD SAVE section, in every state, driven by the game's own Cloud with a mock service.
+func _test_cloud_profile(rich: Dictionary) -> void:
+	var CS = _cloud_script_class()
+	var St = CS.Status
+	var C = root.get_node("Cloud")
+	var plain_backend = C.backend
+	var side_files := [save.path + ".cloud", save.path + ".before_cloud", save.path + ".cloudconflict"]
+	C.forget_state()
+	C.timeout = 1.0
+	var menu = load("res://title_screen.tscn").instantiate()
+	root.add_child(menu)
+	await process_frame
+	var profile = menu.pages.profile
+	profile.capture_text = true
+	var open_profile := func() -> void:
+		menu.go("profile")
+		await create_timer(0.6).timeout
+	var seen := func(text: String) -> bool:
+		return text in profile.shown
+	var rect_ok := func(id: String) -> bool:
+		var r: Rect2 = menu.ui.rect_of(id)
+		return r.size.y >= 60.0 and r.size.x >= 150.0 and r.position.x >= 0.0 and r.end.x <= float(menu.W)
+	_fresh_install()
+	# LOCAL GUEST
+	await open_profile.call()
+	check(seen.call("ACCOUNT & CLOUD SAVE") and seen.call("LOCAL GUEST"), "the profile has an ACCOUNT & CLOUD SAVE section, as a local guest here")
+	check(seen.call("Cloud saves need the Android version with Google Play Games. Progress is saved on this device only.") or _shown_has(profile, "saved on this device only"), "the guest text is honest")
+	check(menu.ui.rect_of("cloud_sync").size.x == 0.0 and menu.ui.rect_of("cloud_connect").size.x == 0.0, "no Sync Now button without a service")
+	# CONNECTING
+	var mock = _cloud_mock_script.new()
+	mock.set_auth(CS.Auth.CHECKING)
+	C.use(mock)
+	await open_profile.call()
+	check(seen.call("CONNECTING") and _shown_has(profile, "Checking your Google Play Games sign-in"), "CONNECTING while sign-in is checked")
+	# GOOGLE PLAY GAMES CONNECTED (the first sync is still running)
+	mock.delay_frames = 400
+	mock.set_auth(CS.Auth.SIGNED_IN)
+	await open_profile.call()
+	check(seen.call("GOOGLE PLAY GAMES CONNECTED") and seen.call("SYNCING..."), "GOOGLE PLAY GAMES CONNECTED during the first sync, with the button busy")
+	check(menu.ui.rect_of("cloud_sync").size.x > 0.0 and rect_ok.call("cloud_sync"), "the sync button is a full-size touch target (%s)" % str(menu.ui.rect_of("cloud_sync")))
+	check(not _shown_has(profile, "Sign out") and not _shown_has(profile, "@") and not _shown_has(profile, "gmail"), "no invented account name, picture or sign-out")
+	# CLOUD SYNCED
+	mock.delay_frames = 1
+	C.use(mock)
+	for i in range(120):
+		await process_frame
+		if not C.busy and i > 3:
+			break
+	await open_profile.call()
+	check(seen.call("CLOUD SYNCED") and seen.call("SYNC NOW") and _shown_has(profile, "Signed in with Google Play Games") and _shown_has(profile, "LAST SYNC"), "CLOUD SYNCED with Sync Now and the last sync time")
+	check(not seen.call("UNSYNCED CHANGES") and rect_ok.call("cloud_sync"), "nothing is unsynced")
+	# SYNC PENDING
+	C.debounce = 30.0
+	save.salvage += 3
+	save.save_data()
+	await open_profile.call()
+	check(seen.call("SYNC PENDING") and seen.call("UNSYNCED CHANGES"), "SYNC PENDING with an unsynced indicator")
+	# Pressing Sync Now syncs.
+	var loads0: int = mock.loads
+	await _press_id(menu.ui, "cloud_sync")
+	for i in range(60):
+		await process_frame
+		if not C.busy and i > 3:
+			break
+	check(mock.loads > loads0 and C.status() == St.SYNCED, "pressing Sync Now syncs")
+	# OFFLINE and Retry
+	mock.offline = true
+	save.salvage += 3
+	save.save_data()
+	C.sync_now()
+	for i in range(60):
+		await process_frame
+		if not C.busy and i > 3:
+			break
+	await open_profile.call()
+	check(seen.call("OFFLINE") and seen.call("RETRY") and _shown_has(profile, "safe on this device"), "OFFLINE with Retry and a message that progress is safe")
+	mock.offline = false
+	loads0 = mock.loads
+	await _press_id(menu.ui, "cloud_sync")
+	for i in range(60):
+		await process_frame
+		if not C.busy and i > 3:
+			break
+	check(mock.loads > loads0 and C.status() == St.SYNCED, "pressing Retry syncs again")
+	# SYNC ERROR
+	mock.fail_kind = "error"
+	C.sync_now()
+	for i in range(60):
+		await process_frame
+		if not C.busy and i > 3:
+			break
+	await open_profile.call()
+	check(seen.call("SYNC ERROR") and seen.call("RETRY"), "SYNC ERROR with Retry")
+	# CHOOSE A SAVE
+	C.forget_state()
+	_cloud_rich_save()
+	var cloud_side: Dictionary = save.to_dict()
+	cloud_side.salvage = 321
+	cloud_side.pilot_xp = 5000
+	mock.set_blob(_cloud_script_class().encode(cloud_side))
+	C.use(mock)
+	for i in range(120):
+		await process_frame
+		if not C.busy and i > 3:
+			break
+	await open_profile.call()
+	check(C.status() == St.CONFLICT and seen.call("CHOOSE A SAVE") and seen.call("KEEP THIS DEVICE'S SAVE") and seen.call("RESTORE CLOUD SAVE"), "a disagreement shows CHOOSE A SAVE with both choices")
+	check(seen.call("THIS DEVICE") and seen.call("CLOUD SAVE") and seen.call("12,345 SALVAGE") and seen.call("321 SALVAGE"), "both saves are described with real numbers")
+	check(_shown_has(profile, "replaces the cloud save") and _shown_has(profile, "Replaces this device's progress"), "each choice says what it will do")
+	check(rect_ok.call("cloud_keep") and rect_ok.call("cloud_restore"), "both choices are full-size touch targets (%s, %s)" % [str(menu.ui.rect_of("cloud_keep")), str(menu.ui.rect_of("cloud_restore"))])
+	var guard: Dictionary = save.to_dict()
+	var saves_guard: int = mock.saves
+	await _press_id(menu.ui, "cloud_keep")
+	for i in range(4):
+		await process_frame
+	check(seen.call("YES, REPLACE THE CLOUD SAVE") and seen.call("CANCEL") and C.status() == St.CONFLICT, "a choice needs a second tap")
+	check(CS.progress_hash(save.to_dict()) == CS.progress_hash(guard) and mock.saves == saves_guard, "and nothing happens after the first")
+	await _press_id(menu.ui, "cloud_cancel")
+	for i in range(4):
+		await process_frame
+	check(seen.call("KEEP THIS DEVICE'S SAVE") and C.status() == St.CONFLICT, "Cancel goes back to the two choices")
+	await _press_id(menu.ui, "cloud_restore")
+	for i in range(4):
+		await process_frame
+	check(seen.call("YES, REPLACE THIS DEVICE'S SAVE"), "Restore also asks again")
+	await _press_id(menu.ui, "cloud_confirm")
+	for i in range(60):
+		await process_frame
+		if not C.busy and i > 3:
+			break
+	check(save.salvage == 321 and save.pilot_xp == 5000 and C.status() == St.SYNCED, "confirming Restore brings back the cloud save")
+	# Leave the game's own Cloud as a local guest again.
+	menu.queue_free()
+	await process_frame
+	C.use(plain_backend)
+	C.forget_state()
+	C.debounce = C.DEBOUNCE
+	C.timeout = C.TIMEOUT
+	for f in side_files:
+		DirAccess.remove_absolute(f)
+	print("cloud profile ok")
+
+func _sha(bytes: PackedByteArray) -> String:
+	var ctx := HashingContext.new()
+	ctx.start(HashingContext.HASH_SHA256)
+	ctx.update(bytes)
+	return ctx.finish().hex_encode()
 
 func _shown_has(profile, fragment: String) -> bool:
 	for line in profile.shown:

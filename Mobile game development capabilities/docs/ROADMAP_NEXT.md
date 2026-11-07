@@ -7,7 +7,7 @@ How the current game is built, since every proposal leans on it:
 - A run is `session -> game.gd`. Modifiers (Dials, tiers, Danger Contracts) change how a run plays, and loot, parts and pilot XP are paid when it ends.
 - Gear is three slots with random affixes and 13 Legendary perks. Each perk is tied to a boss through `Gear.PERKS[...].boss`, and the perks reuse the Module card stat keys (`ricochet`, `drones`, `phoenix`...).
 - Ships have a trait, mastery levels and paints. Nova modes are chosen in the Hangar.
-- Meta already has daily contracts, achievements, the codex, a season table that does not change play yet, and `CloudSave.Backend` for cloud saves.
+- Meta already has daily contracts, achievements, the codex, a season table that does not change play yet, and cloud saves (`Cloud`, `CloudSave.Backend`; see `docs/CLOUD_SAVE.md`).
 
 Suggested order: Build Report, then Weekly Boss Bounties, then Gear sets, then Faction reputation, then Daily rankings. The first two need no new systems and tell us what the rest should be.
 

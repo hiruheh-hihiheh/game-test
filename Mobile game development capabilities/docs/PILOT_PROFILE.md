@@ -9,6 +9,7 @@ The page is `src/menus/menu_profile.gd`. It is registered as the `profile` page 
 | Section | What it shows |
 |---|---|
 | Hero | A large level emblem with the rank wings, total pilot XP, and the ship you fly with its role and mastery |
+| Account & cloud save | Directly under the hero card. The Google Play Games / cloud state as one honest label, the account line, the last sync time, an unsynced indicator, and Sync Now / Retry / Connect. When two saves disagree it becomes the CHOOSE A SAVE screen. See [CLOUD_SAVE.md](CLOUD_SAVE.md) |
 | XP progression | Level, XP into the level out of XP needed, a large bar with a percentage (it fills up when the page opens, with a soft glint), exact XP to the next level, lifetime XP, and a note that there is no level cap |
 | Next level rewards | The salvage, parts and permanent bonus gains for the next level. When the next level pays gear, a gold card names the rarity and the level. If the permanent bonuses are capped, the bonus tiles say MAXED |
 | Progression roadmap | The next level, the next three gear drops after it, and level 100 (the point where damage and shield bonuses stop growing). Nothing already reached is offered as upcoming, and level 100 appears once |
@@ -36,4 +37,4 @@ Reduce motion switches off the XP bar fill, the orbiting emblem arcs and the car
 
 `_test_pilot_profile` in `tools/test_game.gd` checks the curve, `reward_for`, the bonuses before, at and after level 100, the milestone lists for many levels (no duplicates, nothing already reached), and that `grant()` pays exactly the previewed salvage, parts and gear over several levels at once. It opens the profile with a touch on the chip, returns with Back, and reads back every string the page painted to check the XP start, middle and end of a level, next-level salvage and parts, the Rare gear card at level 5, the Epic card at level 10, levels 99, 100 and 150, the career figures, and the ship. It plays a flight that gains several levels, checks the results line against the preview, and checks the profile shows the new level and next rewards afterwards, and that opening the page changes nothing. It also renders the page under Larger Interface, Reduce Motion and Reduce Flashes, scrolls it, presses OPEN HANGAR by touch, and adds the page to the touch-target audit.
 
-Screenshots are in `screenshots/pilot-profile/`.
+Screenshots are in `screenshots/pilot-profile/` (the cloud section: `screenshots/cloud-save/`, drawn with the mock service).
