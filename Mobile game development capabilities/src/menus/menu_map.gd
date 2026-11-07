@@ -283,6 +283,7 @@ func _paint_preflight(c: UILayer) -> void:
 	c.scroll_max = maxf(0.0, y + c.scroll - by + 12.0)
 	m.header(c, "RIFT" if endless else ("LEVEL %d" % level if mode == "campaign" else "BLACK BOX"), UI.CYAN)
 	c.draw_rect(Rect2(0, by - 10.0, W, float(m.H)), Color(0.01, 0.01, 0.05, 0.86))
+	c.cover(Rect2(0, by - 10.0, W, float(m.H)))
 	var mult := Mutators.multiplier(dials)
 	var label := "LAUNCH" if mult <= 1.0 else "LAUNCH  x%.2f" % mult
 	var launch_opts := {"primary": true, "icon": ICON_PLAY, "size": 34}

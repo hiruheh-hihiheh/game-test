@@ -87,6 +87,7 @@ func paint(c: UILayer) -> void:
 	var tabs := [["ships", "SHIPS"], ["gear", "GEAR"], ["lab", "LAB"], ["tech", "TECH"], ["nova", "NOVA"]]
 	var tw := (w - 24.0) / 5.0
 	c.draw_rect(Rect2(0, float(m.top) + 178.0, W, 76.0), Color(0.01, 0.01, 0.05, 0.86))
+	c.cover(Rect2(0, float(m.top) + 178.0, W, 76.0))
 	for i in range(tabs.size()):
 		var on: bool = tab == tabs[i][0]
 		c.button("tab_" + str(tabs[i][0]), Rect2(x + float(i) * (tw + 6.0), float(m.top) + 186.0, tw, 62), str(tabs[i][1]), UI.MINT if on else UI.CYAN, {"selected": on, "size": 19})

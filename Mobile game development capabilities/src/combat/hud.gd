@@ -310,6 +310,7 @@ func _paint_cards(c: UILayer) -> void:
 	var phase_t: float = g.phase_t
 	var a := clampf(phase_t * 5.0, 0.0, 1.0)
 	c.draw_rect(Rect2(0, 0, W, H), Color(0.01, 0.01, 0.04, 0.84 * a))
+	c.cover(Rect2(0, 0, W, H))
 	var options: Array = g.card_options
 	var count := options.size()
 	var w := minf(W - 40.0, 680.0)
@@ -387,6 +388,7 @@ func _paint_results(c: UILayer) -> void:
 	var H: float = g.H
 	var k := clampf((float(g.phase_t) - (0.5 if win else 0.0)) * 3.5, 0.0, 1.0)
 	c.draw_rect(Rect2(0, 0, W, H), Color(0.01, 0.01, 0.04, 0.9 * k))
+	c.cover(Rect2(0, 0, W, H))
 	var w := minf(W - 48.0, 672.0)
 	var x := (W - w) * 0.5
 	var color: Color = UI.MINT if win else UI.RED
@@ -432,6 +434,7 @@ func _paint_results(c: UILayer) -> void:
 		y += 34.0
 	c.scroll_max = maxf(0.0, y + c.scroll - (bar_top - 8.0))
 	c.draw_rect(Rect2(0, bar_top - 10.0, W, H), Color(0.01, 0.01, 0.05, 0.96))
+	c.cover(Rect2(0, bar_top - 10.0, W, H))
 	if k >= 1.0:
 		_result_buttons(c, x, bar_top, w, win)
 
@@ -542,6 +545,7 @@ func _paint_pause(c: UILayer) -> void:
 	var W: float = g.W
 	var H: float = g.H
 	c.draw_rect(Rect2(0, 0, W, H), Color(0.01, 0.01, 0.04, 0.86))
+	c.cover(Rect2(0, 0, W, H))
 	var w := minf(W - 80.0, 580.0)
 	var x := (W - w) * 0.5
 	var y := H * 0.5 - 390.0

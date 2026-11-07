@@ -928,8 +928,11 @@ func _collect_targets() -> Array:
 	root.add_child(menu)
 	await process_frame
 	var take := func(label: String) -> void:
-		for b in menu.ui._buttons:
-			out.append({"screen": label, "id": str(b.id), "rect": b.rect})
+		_probe_touches(menu.ui, label)
+		var covers: Array = (menu.ui._covers as Array).duplicate()
+		for k in range(menu.ui._buttons.size()):
+			var b: Dictionary = menu.ui._buttons[k]
+			out.append({"screen": label, "id": str(b.id), "rect": b.rect, "index": k, "covers": covers})
 	var scrolled := func(label: String, positions: Array) -> void:
 		for sc in positions:
 			menu.ui.scroll = float(sc)
@@ -1022,8 +1025,11 @@ func _collect_targets() -> Array:
 				game.phase_t = 3.0
 		for i in range(4):
 			await process_frame
-		for b in game.ui._buttons:
-			out.append({"screen": "combat/" + which, "id": str(b.id), "rect": b.rect})
+		_probe_touches(game.ui, "combat/" + which)
+		var game_covers: Array = (game.ui._covers as Array).duplicate()
+		for k in range(game.ui._buttons.size()):
+			var gb: Dictionary = game.ui._buttons[k]
+			out.append({"screen": "combat/" + which, "id": str(gb.id), "rect": gb.rect, "index": k, "covers": game_covers})
 		game.queue_free()
 		await process_frame
 	save.unlocked = 1
@@ -1031,35 +1037,143 @@ func _collect_targets() -> Array:
 	save.pilot_xp = 0
 	return out
 
-## Touch targets in layout units (the layout is 720 wide on every phone) and what they are on a real device.
-## dp = units * width_dp / 720, and 48 dp is the usual guideline.
+## Touch targets. The layout is `logical width` units wide on every phone, so what a control is on a real device
+## depends on the phone: one unit is width_dp / 720 dp. These are checks in layout units with the dp conversion
+## printed next to them. They are simulated touches, not proof that a thumb will find a control on a real phone.
+const TOUCH_PROFILES := [["compact", 360.0], ["typical", 411.0]]
+var touch_probes := 0
+var touch_issues: Array = []
+
+## Probes one painted screen with the real hit test: a touch inside a control must reach a control that
+## contains it, and a touch in a margin must reach the nearest control whose enlarged area contains it.
+func _probe_touches(ui, label: String) -> void:
+	var UL = load("res://src/ui_layer.gd")
+	var list: Array = ui._buttons
+	for i in range(list.size()):
+		var r: Rect2 = list[i].rect
+		if r.size.x < 1.0 or r.end.y < 0.0 or r.position.y > 1280.0:
+			continue
+		var inside := [r.get_center(), r.position + Vector2(3.0, 3.0), Vector2(r.end.x - 3.0, r.position.y + 3.0), Vector2(r.position.x + 3.0, r.end.y - 3.0), r.end - Vector2(3.0, 3.0)]
+		for p in inside:
+			if ui._covered(i, p):
+				continue
+			touch_probes += 1
+			var hit: Dictionary = ui._find(p)
+			if hit.is_empty() or not (hit.rect as Rect2).has_point(p):
+				touch_issues.append("%s: a touch inside %s did not reach a control under it" % [label, str(list[i].id)])
+		for side in [Vector2(0, -1), Vector2(0, 1), Vector2(-1, 0), Vector2(1, 0)]:
+			var q: Vector2 = r.get_center() + Vector2(side.x * (r.size.x * 0.5 + 8.0), side.y * (r.size.y * 0.5 + 8.0))
+			if ui._covered(i, q):
+				continue
+			touch_probes += 1
+			var margin_hit: Dictionary = ui._find(q)
+			if margin_hit.is_empty() or (margin_hit.rect as Rect2).has_point(q):
+				continue
+			var found_d: float = UL.margin_distance(margin_hit, q)
+			if not UL.touch_rect(margin_hit.rect, ui._min_touch).has_point(q):
+				touch_issues.append("%s: a margin touch near %s reached %s outside its touch area" % [label, str(list[i].id), str(margin_hit.id)])
+			for j in range(list.size()):
+				var other: Rect2 = list[j].rect
+				if UL.touch_rect(other, ui._min_touch).has_point(q) and not ui._covered(j, q) and UL.margin_distance(list[j], q) < found_d - 0.01:
+					touch_issues.append("%s: a margin touch near %s skipped the nearer control %s" % [label, str(list[i].id), str(list[j].id)])
+					break
+
 func _test_touch_targets() -> void:
+	touch_probes = 0
+	touch_issues = []
 	var targets: Array = await _collect_targets()
 	var ui_layer = load("res://src/ui_layer.gd")
+	# The minimum follows the device: 48 dp on every profile.
+	check(is_equal_approx(ui_layer.min_touch_for(360.0, 720.0), 96.0), "a 360 dp phone needs 96 units for 48 dp")
+	check(absf(ui_layer.min_touch_for(411.0, 720.0) - 84.09) < 0.05, "a 411 dp phone needs about 84 units for 48 dp")
+	check(is_equal_approx(ui_layer.min_touch_for(320.0, 720.0), 108.0), "a 320 dp phone needs 108 units")
+	check(is_equal_approx(ui_layer.min_touch_for(800.0, 720.0), ui_layer.MIN_UNITS) and is_equal_approx(ui_layer.min_touch_for(150.0, 720.0), ui_layer.MAX_UNITS), "the minimum stays between its floor and its ceiling")
+	check(ui_layer.min_touch_for(411.0, 800.0) > ui_layer.min_touch_for(411.0, 720.0), "a wider layout means smaller units, so more of them")
+	var probe_ui = ui_layer.new()
+	ui_layer.width_dp_override = 0.0
+	check(is_equal_approx(probe_ui.device_width_dp(), ui_layer.COMPACT_DP), "a desktop assumes the stricter 360 dp phone")
+	ui_layer.width_dp_override = 411.0
+	check(is_equal_approx(probe_ui.device_width_dp(), 411.0), "the width can be overridden for tests")
+	check(absf(ui_layer.min_touch_for(probe_ui.device_width_dp(), probe_ui.layout_width()) - 84.09) < 0.05, "the override feeds the minimum the way a real 411 dp phone would")
+	ui_layer.width_dp_override = 360.0
+	check(is_equal_approx(ui_layer.min_touch_for(probe_ui.device_width_dp(), probe_ui.layout_width()), 96.0), "and a 360 dp phone gets 96 units")
+	ui_layer.width_dp_override = 0.0
+	probe_ui.free()
+	# Every control on every screen, for both device profiles.
 	var seen := {}
 	var checked := 0
-	var worst := 999.0
-	var worst_id := ""
+	var worst := {}
+	for p in TOUCH_PROFILES:
+		worst[p[0]] = 999.0
 	for t in targets:
 		var r: Rect2 = t.rect
-		if r.size.x < 1.0 or r.size.y < 1.0:
-			continue
-		if r.end.y < 0.0 or r.position.y > 1280.0:
+		if r.size.x < 1.0 or r.size.y < 1.0 or r.end.y < 0.0 or r.position.y > 1280.0:
 			continue
 		var key := "%s|%s" % [t.screen, t.id]
 		if seen.has(key):
 			continue
 		seen[key] = true
-		var eff: Rect2 = ui_layer.touch_rect(r)
-		var side := minf(eff.size.x, eff.size.y)
 		checked += 1
-		if side < worst:
-			worst = side
-			worst_id = key
-		check(side >= ui_layer.MIN_TOUCH - 0.01, "touch area of %s is %.0f units (minimum %.0f)" % [key, side, ui_layer.MIN_TOUCH])
+		for p in TOUCH_PROFILES:
+			var need: float = ui_layer.min_touch_for(float(p[1]), 720.0)
+			var eff: Rect2 = ui_layer.touch_rect(r, need)
+			var dp_per_unit: float = float(p[1]) / 720.0
+			var side_dp: float = minf(eff.size.x, eff.size.y) * dp_per_unit
+			worst[p[0]] = minf(float(worst[p[0]]), side_dp)
+			check(side_dp >= 47.9, "touch area of %s is %.1f dp on a %.0f dp phone (48 needed)" % [key, side_dp, float(p[1])])
 	check(checked > 150, "the touch audit looked at enough controls (%d)" % checked)
-	print("touch targets: %d controls, smallest effective side %.0f units (%s) = %.0f dp on a 411 dp phone, %.0f dp on a 360 dp phone" % [checked, worst, worst_id, worst * 411.0 / 720.0, worst * 360.0 / 720.0])
-	# A touch just outside a small control still reaches it, and never steals from a neighbour.
+	check(touch_probes > 3000, "the touch probes ran (%d)" % touch_probes)
+	for issue in touch_issues.slice(0, 8):
+		check(false, str(issue))
+	check(touch_issues.is_empty(), "no touch probe reached the wrong control (%d problems in %d probes)" % [touch_issues.size(), touch_probes])
+	print("touch targets: %d controls, smallest effective area %.1f dp (360 dp phone) and %.1f dp (411 dp phone); %d probes, %d problems" % [checked, float(worst["compact"]), float(worst["typical"]), touch_probes, touch_issues.size()])
+
+	# The hit test on synthetic neighbours.
+	var ui = ui_layer.new()
+	ui._min_touch = 96.0
+	var add := func(id: String, rect: Rect2) -> void:
+		ui._buttons.append({"id": id, "rect": rect})
+	add.call("a", Rect2(0, 0, 100, 40))
+	add.call("b", Rect2(106, 0, 100, 40))   # six units to the right of a
+	add.call("c", Rect2(0, 50, 100, 40))    # ten units below a: their enlarged areas overlap
+	var id_at := func(x: float, y: float) -> String:
+		return str(ui._find(Vector2(x, y)).get("id", ""))
+	check(id_at.call(99.0, 20.0) == "a" and id_at.call(106.5, 20.0) == "b", "a direct touch beside a gap goes to the control under it")
+	check(id_at.call(104.0, 20.0) == "b" and id_at.call(102.0, 20.0) == "a", "a touch in a gap goes to the nearer control")
+	check(id_at.call(50.0, 43.0) == "a" and id_at.call(50.0, 47.0) == "c", "enlarged areas that overlap split at the halfway line")
+	check(id_at.call(50.0, 39.0) == "a" and id_at.call(50.0, 51.0) == "c", "a direct touch is never taken by a neighbour's margin")
+	check(id_at.call(50.0, 20.0 - 60.0) == "", "a touch far from everything reaches nothing")
+	# A destructive control gives way in the gap beside a safe one.
+	ui._buttons.clear()
+	add.call("equip", Rect2(0, 0, 150, 62))
+	ui._buttons.append({"id": "scrap", "rect": Rect2(0, 72, 150, 62), "careful": true})
+	check(id_at.call(75.0, 61.0) == "equip" and id_at.call(75.0, 73.0) == "scrap", "a direct touch on either button still reaches it")
+	check(id_at.call(75.0, 68.0) == "equip" and id_at.call(75.0, 70.0) == "equip", "a loose touch in the gap goes to the safe button, not the destructive one")
+	check(id_at.call(75.0, 134.0 + 14.0) == "scrap", "away from the neighbour the destructive button keeps its margin")
+	# Adjacent segments with no gap, like a segmented control.
+	ui._buttons.clear()
+	add.call("s0", Rect2(0, 0, 100, 54))
+	add.call("s1", Rect2(100, 0, 100, 54))
+	add.call("s2", Rect2(200, 0, 100, 54))
+	check(id_at.call(99.0, 27.0) == "s0" and id_at.call(100.5, 27.0) == "s1" and id_at.call(199.0, 27.0) == "s1" and id_at.call(201.0, 27.0) == "s2", "adjacent segments keep their exact boundaries (no slop leaks across)")
+	check(id_at.call(150.0, 54.0 + 18.0) == "s1" and id_at.call(150.0, -18.0) == "s1", "a touch above or below a segment reaches it")
+	check(id_at.call(150.0, 54.0 + 60.0) == "", "but not from far away")
+	# A card with a small button inside, and a control scrolled under a strip.
+	ui._buttons.clear()
+	add.call("card", Rect2(0, 100, 300, 120))
+	add.call("btn", Rect2(200, 110, 80, 40))
+	check(id_at.call(240.0, 130.0) == "btn" and id_at.call(100.0, 130.0) == "card", "a button on a card beats the card directly under it")
+	check(id_at.call(240.0, 156.0) == "card", "below the button, in the card, the card is a direct touch and wins over the button's margin")
+	ui._buttons.clear()
+	ui._covers.clear()
+	add.call("hidden", Rect2(0, 0, 300, 100))
+	ui.cover(Rect2(0, 0, 300, 60))
+	add.call("tab", Rect2(100, 10, 80, 40))
+	check(id_at.call(20.0, 30.0) == "" and id_at.call(150.0, 30.0) == "tab", "a control that slid under an opaque strip stops answering inside the strip")
+	check(id_at.call(20.0, 80.0) == "hidden", "and answers again below it")
+	ui.free()
+
+	# The real screens: segments, chips, tabs and the strips above scrolled content.
 	var menu = load("res://title_screen.tscn").instantiate()
 	root.add_child(menu)
 	await process_frame
@@ -1067,12 +1181,67 @@ func _test_touch_targets() -> void:
 	for i in range(5):
 		await process_frame
 	var seg: Rect2 = menu.ui.rect_of("set_nova_side:left")
-	var probe := Vector2(seg.get_center().x, seg.end.y + 10.0)
-	var hit: Dictionary = menu.ui._find(probe)
-	check(str(hit.get("id", "")) == "set_nova_side:left", "a touch 10 units under a 54-unit segment still reaches it")
-	var between := Vector2(seg.end.x + 1.0, seg.get_center().y)
-	var other: Dictionary = menu.ui._find(between)
-	check(str(other.get("id", "")) == "set_nova_side:right", "a touch on the neighbouring segment goes to the neighbour")
+	var seg2: Rect2 = menu.ui.rect_of("set_nova_side:right")
+	var uip = menu.ui
+	check(str(uip._find(Vector2(seg.end.x - 1.0, seg.get_center().y)).get("id", "")) == "set_nova_side:left" and str(uip._find(Vector2(seg2.position.x + 1.0, seg2.get_center().y)).get("id", "")) == "set_nova_side:right", "settings segments split exactly at their edge")
+	check(str(uip._find(Vector2(seg.get_center().x, seg.end.y + 12.0)).get("id", "")) == "set_nova_side:left", "a touch 12 units below a segment reaches it")
+	var next_row: Rect2 = menu.ui.rect_of("set_nova_double_tap:false")
+	var mid_y := (seg.end.y + next_row.position.y) * 0.5
+	check(str(uip._find(Vector2(seg.get_center().x, mid_y)).get("id", "")) == "", "halfway between two settings rows nothing is selected")
+	var gear_rng := RandomNumberGenerator.new()
+	gear_rng.seed = 5
+	for i in range(3):
+		save.add_gear(gear_db.roll_item(gear_rng, 10.0 + float(i), 0.5, 0, 0))
+	menu.go("hangar")
+	menu.pages.hangar.on_ui("tab_gear")
+	for i in range(5):
+		await process_frame
+	# On a real gear card, the loose gap between EQUIP and SCRAP belongs to EQUIP.
+	var equip_rect := Rect2()
+	var scrap_rect := Rect2()
+	for gb in menu.ui._buttons:
+		var gid := str(gb.id)
+		if gid.begins_with("g_equip_") and equip_rect.size.x == 0.0:
+			equip_rect = gb.rect
+			scrap_rect = menu.ui.rect_of("g_scrap_" + gid.substr(8))
+	if equip_rect.size.x > 0.0 and scrap_rect.size.x > 0.0:
+		var gap := scrap_rect.position.y - equip_rect.end.y
+		var cx := equip_rect.get_center().x
+		check(str(uip._find(Vector2(cx, equip_rect.end.y - 2.0)).get("id", "")).begins_with("g_equip_") and str(uip._find(Vector2(cx, scrap_rect.position.y + 2.0)).get("id", "")).begins_with("g_scrap_"), "EQUIP and SCRAP each answer a direct touch next to each other")
+		check(str(uip._find(Vector2(cx, equip_rect.end.y + gap * 0.5)).get("id", "")).begins_with("g_equip_"), "a loose touch halfway in the gap goes to EQUIP, not SCRAP (gap %.0f units)" % gap)
+	save.gear = []
+	var tab_gear: Rect2 = menu.ui.rect_of("tab_gear")
+	var tab_lab: Rect2 = menu.ui.rect_of("tab_lab")
+	check(str(uip._find(Vector2(tab_gear.end.x - 1.0, tab_gear.get_center().y)).get("id", "")) == "tab_gear" and str(uip._find(Vector2(tab_lab.position.x + 1.0, tab_lab.get_center().y)).get("id", "")) == "tab_lab", "Hangar tabs split exactly at their edge")
+	var gap_x := (tab_gear.end.x + tab_lab.position.x) * 0.5
+	var gap_hit := str(uip._find(Vector2(gap_x - 1.0, tab_gear.get_center().y)).get("id", ""))
+	check(gap_hit == "tab_gear" and str(uip._find(Vector2(gap_x + 1.0, tab_gear.get_center().y)).get("id", "")) == "tab_lab", "a touch in the gap between tabs goes to the nearer tab")
+	var chips: Array = ["g_filter_all", "g_filter_weapon", "g_filter_reactor", "g_filter_plating"]
+	var all_there := true
+	for id in chips:
+		if menu.ui.rect_of(id).size.x < 1.0:
+			all_there = false
+	menu.ui.scroll = 480.0
+	for i in range(3):
+		await process_frame
+	for id in chips:
+		var cr: Rect2 = menu.ui.rect_of(id)
+		if cr.size.x > 0.0 and cr.position.y > 400.0 and cr.end.y < 1200.0:
+			check(str(uip._find(cr.get_center()).get("id", "")) == id and str(uip._find(Vector2(cr.get_center().x, cr.end.y + 14.0)).get("id", "")) in [id, "g_equip_" + id], "Gear filter chip %s answers a touch on it and just under it" % id)
+	# Content scrolled under the tab strip must not answer touches in the strip.
+	menu.pages.hangar.on_ui("tab_ships")
+	menu.ui.scroll = 0.0
+	for i in range(4):
+		await process_frame
+	var strip_top: float = float(menu.top) + 178.0
+	menu.ui.scroll = 300.0
+	for i in range(4):
+		await process_frame
+	var ship: Rect2 = menu.ui.rect_of("ship_nova")
+	if ship.size.x > 0.0 and ship.position.y < strip_top + 30.0 and ship.end.y > strip_top + 30.0:
+		var under := Vector2(gap_x, strip_top + 36.0)
+		var strip_hit := str(uip._find(under).get("id", ""))
+		check(not strip_hit.begins_with("ship_"), "a ship card scrolled under the tab strip does not answer touches in the strip (%s)" % strip_hit)
 	menu.queue_free()
 	await process_frame
 	print("touch targets ok")

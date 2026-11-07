@@ -41,12 +41,14 @@ func _process(delta: float) -> void:
 
 func _draw() -> void:
 	_buttons.clear()
+	_covers.clear()
+	_min_touch = min_touch_for(device_width_dp(), layout_width())
 	if painter.is_valid():
 		painter.call(self)
 
 ## Options: icon, primary, disabled, instant, sub, size, sound.
 func button(id: String, rect: Rect2, label: String, color: Color = UI.CYAN, opts: Dictionary = {}) -> void:
-	_buttons.append({"id": id, "rect": rect, "instant": opts.get("instant", false), "disabled": opts.get("disabled", false), "sound": opts.get("sound", "ui_click")})
+	_buttons.append({"id": id, "rect": rect, "instant": opts.get("instant", false), "disabled": opts.get("disabled", false), "sound": opts.get("sound", "ui_click"), "careful": bool(opts.get("careful", false)) or bool(opts.get("warning", false))})
 	var press := float(_press.get(id, 0.0))
 	var disabled: bool = opts.get("disabled", false)
 	var primary: bool = opts.get("primary", false)
@@ -122,7 +124,7 @@ func button(id: String, rect: Rect2, label: String, color: Color = UI.CYAN, opts
 
 ## An invisible press target over custom-drawn content, such as a card or level node.
 func hit_area(id: String, rect: Rect2, opts: Dictionary = {}) -> void:
-	_buttons.append({"id": id, "rect": rect, "instant": opts.get("instant", false), "disabled": opts.get("disabled", false), "sound": opts.get("sound", "ui_click")})
+	_buttons.append({"id": id, "rect": rect, "instant": opts.get("instant", false), "disabled": opts.get("disabled", false), "sound": opts.get("sound", "ui_click"), "careful": bool(opts.get("careful", false)) or bool(opts.get("warning", false))})
 
 ## Where a button is on screen. Tests use this so they press what a player would press.
 func rect_of(id: String) -> Rect2:
@@ -134,35 +136,101 @@ func rect_of(id: String) -> Rect2:
 func press_amount(id: String) -> float:
 	return float(_press.get(id, 0.0))
 
-## The smallest touch area a control gets, in layout units. The layout is 720 units wide on every phone, so
-## 84 units is 48 dp (about 7.5 mm) on a typical 411 dp phone and 42 dp on a compact 360 dp one. A control
-## drawn smaller keeps its look and gets an invisible margin up to this size.
-const MIN_TOUCH := 84.0
+## Touch areas. A control keeps the look it was drawn with; only the area that answers a touch is enlarged.
+##
+## The layout is `logical width` units wide (720 on a normal phone), and a phone is `width_dp` dp wide, so one
+## unit is width_dp / logical_width dp. To give every control at least TARGET_DP (the usual 48 dp guideline) the
+## minimum is TARGET_DP * logical_width / width_dp units, kept between MIN_UNITS and MAX_UNITS:
+##   411 dp phone -> 84 units    360 dp phone -> 96 units    320 dp phone -> 108 units
+## On a phone the width in dp comes from the screen density. On a desktop (and in tests) a compact 360 dp phone is
+## assumed, which is the stricter case. Set width_dp_override to test another device.
+const TARGET_DP := 48.0
+const MIN_UNITS := 84.0
+const MAX_UNITS := 120.0
+const COMPACT_DP := 360.0
 const SLOP := 6.0
+static var width_dp_override := 0.0
+var _min_touch := 96.0
+var _covers: Array = []   # {rect, below}: controls registered before `below` do not answer touches inside rect
 
-## Where a touch counts for a control: its rectangle, a small slop, and the margin up to MIN_TOUCH.
-static func touch_rect(r: Rect2) -> Rect2:
+static func min_touch_for(width_dp: float, logical_width: float) -> float:
+	return clampf(TARGET_DP * logical_width / maxf(width_dp, 1.0), MIN_UNITS, MAX_UNITS)
+
+## Width of this device in dp, or the compact-phone assumption when it cannot be known.
+func device_width_dp() -> float:
+	if width_dp_override > 0.0:
+		return width_dp_override
+	if OS.has_feature("mobile"):
+		var dpi := float(DisplayServer.screen_get_dpi())
+		var window := get_window()
+		if dpi >= 100.0 and window != null and window.size.x > 0:
+			return float(window.size.x) / (dpi / 160.0)
+	return COMPACT_DP
+
+## Layout units across the screen. On a phone that is the real viewport (720 in portrait, more on a wider screen).
+## Anywhere else the window can be any shape, so the 720-unit design width is used.
+func layout_width() -> float:
+	if width_dp_override <= 0.0 and OS.has_feature("mobile"):
+		return get_viewport_rect().size.x
+	return 720.0
+
+## The smallest touch area for a control on this device, in layout units.
+func min_touch() -> float:
+	return _min_touch
+
+## Where a touch counts for a control: its rectangle, a small slop, and a margin up to min_units.
+static func touch_rect(r: Rect2, min_units: float) -> Rect2:
 	var padded := r.grow(SLOP)
-	var more := Vector2(maxf(0.0, MIN_TOUCH - padded.size.x), maxf(0.0, MIN_TOUCH - padded.size.y)) * 0.5
+	var more := Vector2(maxf(0.0, min_units - padded.size.x), maxf(0.0, min_units - padded.size.y)) * 0.5
 	return padded.grow_individual(more.x, more.y, more.x, more.y)
 
-## A touch on a control (plus its slop) always wins, topmost first. A touch that misses every control goes to the
-## nearest one whose enlarged touch area contains it, so a margin never steals a touch from a neighbour.
+## A destructive control (SCRAP, quit, reset) is "careful": in a margin it gives way to a neighbour that is
+## nearly as close, by this many units, so a loose touch in the gap beside it never destroys anything.
+const CAREFUL_PENALTY := 8.0
+
+## How far a point is from a rectangle (0 inside it).
+static func distance_to_rect(r: Rect2, p: Vector2) -> float:
+	var dx := maxf(maxf(r.position.x - p.x, 0.0), p.x - r.end.x)
+	var dy := maxf(maxf(r.position.y - p.y, 0.0), p.y - r.end.y)
+	return sqrt(dx * dx + dy * dy)
+
+## How far a margin touch at p is from control b, counting the caution that destructive controls show.
+static func margin_distance(b: Dictionary, p: Vector2) -> float:
+	return distance_to_rect(b.rect, p) + (CAREFUL_PENALTY if bool(b.get("careful", false)) else 0.0)
+
+## Marks an opaque strip (a header, a bar of tabs, a bottom bar, a full-screen overlay). Controls drawn before it,
+## such as scrolled content that slid underneath, stop answering touches inside it.
+func cover(rect: Rect2) -> void:
+	_covers.append({"rect": rect, "below": _buttons.size()})
+
+func _covered(index: int, pos: Vector2) -> bool:
+	for c in _covers:
+		if index < int(c.below) and (c.rect as Rect2).has_point(pos):
+			return true
+	return false
+
+## 1. A touch on a control's own rectangle always reaches it (the topmost one where controls stack).
+## 2. A touch that misses every control goes to the nearest control whose enlarged touch area contains it, so a
+##    margin can never take a touch that landed directly on another control.
 func _find(pos: Vector2) -> Dictionary:
 	for i in range(_buttons.size() - 1, -1, -1):
 		var b: Dictionary = _buttons[i]
-		var r: Rect2 = b.rect
-		if r.grow(SLOP).has_point(pos):
+		if (b.rect as Rect2).has_point(pos) and not _covered(i, pos):
 			return b
 	var best := {}
 	var best_d := INF
-	for b in _buttons:
+	var best_c := INF
+	for i in range(_buttons.size()):
+		var b: Dictionary = _buttons[i]
 		var r: Rect2 = b.rect
-		if touch_rect(r).has_point(pos):
-			var d := pos.distance_squared_to(r.get_center())
-			if d < best_d:
-				best_d = d
-				best = b
+		if not touch_rect(r, _min_touch).has_point(pos) or _covered(i, pos):
+			continue
+		var d := margin_distance(b, pos)
+		var cd := pos.distance_squared_to(r.get_center())
+		if d < best_d - 0.001 or (absf(d - best_d) <= 0.001 and cd < best_c):
+			best_d = d
+			best_c = cd
+			best = b
 	return best
 
 func _input(event: InputEvent) -> void:

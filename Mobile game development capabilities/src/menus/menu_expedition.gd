@@ -243,6 +243,7 @@ func _paint_danger(c: UILayer) -> void:
 	var by: float = float(m.H) - float(m.bottom) - 108.0
 	c.scroll_max = maxf(0.0, y + c.scroll - by + 12.0)
 	c.draw_rect(Rect2(0, by - 10.0, float(m.W), float(m.H)), Color(0.01, 0.01, 0.05, 0.9))
+	c.cover(Rect2(0, by - 10.0, float(m.W), float(m.H)))
 	c.button("danger_cancel", Rect2(x, by, 190, 100), "BACK", Color(0.6, 0.64, 0.74), {"size": 24})
 	var label := "FIGHT" if picker.chosen.is_empty() else "FIGHT WITH DANGER"
 	c.button("danger_go", Rect2(x + 204.0, by, w - 204.0, 100), label, UI.MINT, {"primary": true, "size": 28})

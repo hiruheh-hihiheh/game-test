@@ -65,6 +65,7 @@ func paint(c: UILayer) -> void:
 	c.scroll_max = maxf(0.0, y + c.scroll - float(m.H) + float(m.bottom) + 30.0)
 	m.header(c, "OPS", UI.CYAN)
 	c.draw_rect(Rect2(0, float(m.top) + 178.0, W, 76.0), Color(0.01, 0.01, 0.05, 0.86))
+	c.cover(Rect2(0, float(m.top) + 178.0, W, 76.0))
 	var tabs := [["today", "TODAY"], ["awards", "AWARDS"], ["codex", "CODEX"], ["records", "RECORDS"]]
 	var tw := (w - 18.0) / 4.0
 	for i in range(tabs.size()):

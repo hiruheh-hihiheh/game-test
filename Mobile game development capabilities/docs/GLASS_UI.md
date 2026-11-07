@@ -67,14 +67,32 @@ git archive 20fc2aa "Mobile game development capabilities" | tar -x -C C:/temp/o
 
 ## Touch targets
 
-The layout is always 720 units wide, so a control's real size depends on the phone: one unit is `width in dp / 720` dp. A typical 1080 px phone (411 dp wide, 65 mm) gives 0.57 dp or 0.09 mm per unit. A compact 720 px phone (360 dp, 57 mm) gives 0.50 dp or 0.08 mm per unit.
+The layout is `logical width` units wide (720 on a normal phone), so a control's real size depends on the phone: one unit is `width in dp / 720` dp. A 411 dp phone (65 mm) gives 0.57 dp per unit, a compact 360 dp phone (57 mm) gives 0.50 dp.
 
-`tools/touch_audit.gd` lists the smallest controls on every screen and in every combat phase. Findings, 492 controls checked:
+**The rule:** every control answers a touch over at least 48 dp. The visible controls are not enlarged. Only the invisible area that answers a touch grows.
 
-- 314 of 492 controls are drawn smaller than 84 units (48 dp on a typical phone). The smallest are the Settings segments and Gear filter chips, 54 units tall (31 dp typical, 27 dp compact), then tabs and the Abandon button at 56 to 62 units (32 to 35 dp). The map's level nodes are 84 to 112 units across (48 to 64 dp).
-- To fix that without redrawing anything, every control now gets an invisible touch margin up to `UILayer.MIN_TOUCH` = 84 units (**48 dp on a typical phone, 42 dp on a compact one, about 7.6 mm and 6.7 mm**). A touch on a control or its 6-unit slop always wins. A touch that misses everything goes to the nearest control whose enlarged area contains it, so a margin never steals a touch from a neighbour.
-- `_test_touch_targets` fails the suite if any control on those screens has a smaller effective touch area, and checks both rules above on a real settings segment. A 40-unit check would prove nothing about a thumb, which is why the test is in layout units with the dp conversion printed next to it.
-- Still to confirm by hand on a real phone: that the visible 54-unit segments feel right to hit, and that the margin does not make a mistap more likely in the dense Gear filter row.
+- The minimum is computed from the device: `48 dp x layout width / device width in dp`, kept between 84 and 120 units. That is **96 units on a 360 dp phone, 84 units on a 411 dp phone, 108 units on a 320 dp phone**. On Android the width in dp comes from the screen density. On a desktop, and in the tests, a 360 dp phone is assumed, which is the stricter case. If the density is not reported (below 100 dpi) the 360 dp assumption is used too. (`UILayer.min_touch_for`, `device_width_dp`, `layout_width`.)
+- **A touch inside a control's own rectangle always reaches it**, the topmost one where controls stack. Nothing else can take it. (Before this change a 6-unit slop around each control could take 6 units off the side of an adjacent one, for example between settings segments.)
+- **A touch that misses every control** goes to the nearest control whose enlarged area contains it. Two controls whose margins overlap split the overlap at the halfway line.
+- **Destructive controls are "careful"** (SCRAP, SCRAP COMMON + UNCOMMON, and every `warning` button such as Reset, Quit flight and Abandon). In a margin they give way to a neighbour that is nearly as close, by 8 units. The EQUIP and SCRAP buttons on a gear card are 10 units apart, so a loose touch in that gap equips, never scraps. A direct touch on SCRAP still scraps.
+- **Strips cover what is under them.** Scrolled content that slides beneath a header, a bar of tabs, a bottom bar or a full-screen overlay no longer answers touches inside that strip (`UILayer.cover`).
+
+`tools/touch_audit.gd` reports, for 492 controls on 45 screens and combat states:
+
+| | 360 dp phone | 411 dp phone |
+|---|---|---|
+| Minimum touch area | 96 units = 48 dp = 7.6 mm | 84.1 units = 48 dp = 7.6 mm |
+| Smallest drawn control | 54 units = 27 dp = 4.3 mm | 54 units = 31 dp = 4.9 mm |
+| Smallest effective touch area | 96 units = 48.0 dp | 84.1 units = 48.0 dp |
+| Controls relying on an invisible margin | 403 of 492 | 392 of 492 |
+
+The controls that rely on margins most are the Settings segments and Gear filter chips (drawn 54 tall, touch area 96 or 84), the Hangar and Ops tabs (62 tall), Gear card buttons and Swap and Fly buttons (62 to 72), Abandon (56), the Pause button (74, so 96 or 86 square) and the map's level nodes (84, so 96 or 84). The audit lists them all, with drawn and effective sizes in units and dp.
+
+The audit also lists neighbouring controls whose enlarged areas overlap (not counting content hidden under a strip): 223 pairs on the 360 dp profile, 98 of them where one margin reaches the other control's own rectangle. The tightest are EQUIP over SCRAP on gear cards (10 units apart). All of them are settled by the rules above.
+
+`_test_touch_targets` fails the suite if any control has less than 48 dp on either profile. It also fails if any of about 4,000 probes reaches the wrong control: a touch inside a control must reach a control that contains it, and a margin touch must reach the nearest allowed control. It tests synthetic neighbours (a gap of six units, overlapping margins, segments with no gap, a button on a card, a control under a strip, a destructive button beside a safe one), and the real Settings, Hangar-tab, Gear-chip and gear-card layouts.
+
+These are layout calculations and simulated touches. They do not show that a thumb on a real phone finds each control. That needs the device checks in `docs/DEVICE_TESTING.md`, and the density-based width has not been exercised on an Android device.
 
 ## Combat HUD
 

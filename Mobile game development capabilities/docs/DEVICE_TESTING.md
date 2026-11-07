@@ -66,7 +66,7 @@ Nothing about the glass UI has been run on a real device yet (no Android SDK, ex
 
 - Device model, screen resolution and density, Android version, and the renderer shown in the Godot output (the project uses GL Compatibility).
 - Frame rate in menus (Hangar gear tab and the map are the heaviest), in a busy level, and in a boss fight. Turn on `show_fps` through Godot's Remote debugger, or use `adb shell dumpsys gfxinfo com.starfall.salvage framestats`.
-- Whether Settings segments, Gear filter chips and tabs are easy to hit with a thumb. They are drawn 54 to 62 units tall and rely on a 84-unit touch margin.
+- Whether Settings segments, Gear filter chips and tabs are easy to hit with a thumb. They are drawn 54 to 62 units tall and rely on an invisible touch margin (96 units on a 360 dp phone, 84 on a 411 dp phone). Also note the dp width the game works out: it is printed by `tools/touch_audit.gd` for two example phones, but on a device it comes from the screen density, so check that a real phone behaves like its profile. Try EQUIP and SCRAP on gear cards with a loose thumb: it should never scrap by accident.
 - Any clipping at the notch, rounded corners or navigation bar, especially the Launch button, the results buttons and the pause menu.
 - Whether the score plate, boss bar or Nova disc ever hide something important.
 - Frame rate again with Reduce motion and Reduce flashes on, and with the interface size set to Large.

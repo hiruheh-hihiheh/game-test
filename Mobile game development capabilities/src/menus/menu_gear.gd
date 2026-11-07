@@ -84,7 +84,7 @@ func paint(c: UILayer, x: float, y: float, w: float) -> float:
 	UI.panel(c, chip, Color(0.02, 0.04, 0.1, 0.9), Color(UI.GOLD, 0.6), 12, 2)
 	UI.text(c, "PARTS", chip.position + Vector2(18, 38), 19, UI.TEXT_DIM, true)
 	UI.text(c, str(Save.parts), chip.position + Vector2(212, 41), 28, UI.WHITE, true, UI.RIGHT)
-	c.button("g_scrap_low", Rect2(x + 246.0, y, w - 246.0, 62), "SCRAP COMMON + UNCOMMON", UI.ORANGE, {"size": 17})
+	c.button("g_scrap_low", Rect2(x + 246.0, y, w - 246.0, 62), "SCRAP COMMON + UNCOMMON", UI.ORANGE, {"size": 17, "careful": true})
 	y += 78.0
 	UI.outlined(c, "BAG  %d / %d" % [Save.gear.size(), Gear.MAX_ITEMS], Vector2(x + 4.0, y + 22.0), 21, UI.CYAN, true)
 	y += 36.0
@@ -187,7 +187,7 @@ func _card(c: UILayer, item: Dictionary, x: float, y: float, w: float, equipped:
 			c.button("g_used_%d" % uid, Rect2(bx, r.position.y + 86.0, 150, 62), "ON " + str(Ships.LIST[other].name), Color(0.5, 0.54, 0.64), {"size": 15, "disabled": true})
 		else:
 			var sure := confirm_uid == uid
-			c.button("g_scrap_%d" % uid, Rect2(bx, r.position.y + 86.0, 150, 62), "SURE?" if sure else "SCRAP", UI.RED if sure else UI.ORANGE, {"size": 19, "sub": "+%d parts" % Gear.scrap_value(item), "sound": "", "warning": sure})
+			c.button("g_scrap_%d" % uid, Rect2(bx, r.position.y + 86.0, 150, 62), "SURE?" if sure else "SCRAP", UI.RED if sure else UI.ORANGE, {"size": 19, "sub": "+%d parts" % Gear.scrap_value(item), "sound": "", "warning": sure, "careful": true})
 	UI.enter_veil(c, r, float(m.screen_t), mini(veil_i, 8))
 	veil_i += 1
 	return y + h + 10.0

@@ -246,6 +246,7 @@ func salvage_chip(c: UILayer, right: float, y: float) -> void:
 ## Page header: home button, salvage and title, with a strip that hides scrolled content.
 func header(c: UILayer, title: String, accent: Color) -> float:
 	c.draw_rect(Rect2(0, 0, W, top + 176.0), Color(0.01, 0.01, 0.05, 0.86))
+	c.cover(Rect2(0, 0, W, top + 178.0))
 	c.draw_rect(Rect2(0, top + 176.0, W, 2), Color(accent, 0.4))
 	c.button("back", Rect2(20, top, 84, 84), "", UI.WHITE, {"icon": ICON_HOME, "sound": "ui_back"})
 	salvage_chip(c, W - 20.0, top + 14.0)
