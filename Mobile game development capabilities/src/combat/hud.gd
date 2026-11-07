@@ -136,6 +136,10 @@ func _paint_hud(c: UILayer) -> void:
 		var size := 26 + mini(int(g.combo), 30) / 3
 		UI.outlined(c, "COMBO %d" % int(g.combo), Vector2(22, top + 100.0), size, UI.GOLD, true)
 		c.draw_rect(Rect2(22, top + 108.0, 180.0 * clampf(float(g.combo_timer) / 2.8, 0.0, 1.0), 4), UI.GOLD)
+	# A faint glass plate behind the score and level name keeps them readable. It stays thin and see-through,
+	# so the battlefield behind it is never hidden.
+	var plate_w := clampf(UI.width_of(_flight_label(), 20) + 60.0, 230.0, W - 360.0)
+	UI.glass(c, Rect2(W * 0.5 - plate_w * 0.5, top + 2.0, plate_w, 82.0), UI.Kind.INFO, UI.CYAN, {"chamfer": 14, "alpha": 0.34})
 	UI.outlined(c, str(int(g.shown_score)), Vector2(W * 0.5, top + 42.0), 42, UI.WHITE, true, UI.CENTER)
 	UI.outlined(c, _flight_label(), Vector2(W * 0.5, top + 72.0), 20, UI.TEXT_DIM, false, UI.CENTER)
 	c.button("pause", Rect2(W - 92, top - 2.0, 74, 74), "", UI.WHITE, {"icon": ICON_PAUSE, "instant": true})
@@ -177,7 +181,9 @@ func _paint_boss_bar(c: UILayer) -> void:
 	var w: float = g.W
 	var r := Rect2(40, y, w - 80, 22)
 	var boss = g.boss
-	UI.outlined(c, str(boss.def.name), Vector2(w * 0.5, y - 8.0), 22, Color(1.0, 0.8, 0.86), true, UI.CENTER)
+	var name_text := str(boss.def.name)
+	UI.glass(c, Rect2(w * 0.5 - UI.width_of(name_text, 22, true) * 0.5 - 22.0, y - 34.0, UI.width_of(name_text, 22, true) + 44.0, 32.0), UI.Kind.WARNING, UI.RED, {"chamfer": 10, "alpha": 0.5})
+	UI.outlined(c, name_text, Vector2(w * 0.5, y - 10.0), 22, Color(1.0, 0.8, 0.86), true, UI.CENTER)
 	UI.bar(c, r, float(boss.hp) / float(boss.max_hp), UI.MAGENTA)
 	for k in BossBase.STAGE_AT:
 		var x: float = r.position.x + r.size.x * float(k)
@@ -200,10 +206,20 @@ func _paint_nova(c: UILayer) -> void:
 		return
 	if ready:
 		c.hit_area("burst", Rect2(center - Vector2(r, r), Vector2(r, r) * 2.0), {"instant": true, "sound": ""})
-		UI.glow(c, center, r * 1.8 + sin(g.t * 6.0) * 10.0, Color(UI.CYAN, 0.5))
-	c.draw_circle(center, r, Color(0.02, 0.05, 0.12, 0.82))
-	c.draw_arc(center, r - 4.0, 0.0, TAU, 48, Color(UI.CYAN, 0.2), 6.0, true)
-	c.draw_arc(center, r - 4.0, -PI * 0.5, -PI * 0.5 + TAU * float(g.energy) / 100.0, 48, UI.MINT if ready else UI.CYAN, 7.0, true)
+		UI.glow(c, center, r * 1.8 + (sin(g.t * 6.0) * 10.0 if UI.flash_ok() else 0.0), Color(UI.CYAN, 0.5))
+		if UI.flash_ok():
+			var ring := fmod(UI.clock() * 0.9, 1.0)
+			c.draw_arc(center, r + 4.0 + ring * 16.0, 0.0, TAU, 48, Color(UI.MINT, 0.55 * (1.0 - ring)), 2.5, true)
+	# A glass disc: dark centre, a light rim, a soft highlight on the upper edge, and a charge arc with a bright tip.
+	c.draw_circle(center, r, Color(0.02, 0.05, 0.12, 0.8))
+	c.draw_arc(center, r - 1.0, 0.0, TAU, 64, Color(UI.CYAN, 0.38), 1.5, true)
+	c.draw_arc(center, r - 12.0, -PI * 0.85, -PI * 0.15, 20, Color(1, 1, 1, 0.09), 8.0, true)
+	c.draw_arc(center, r - 6.0, 0.0, TAU, 48, Color(UI.CYAN, 0.14), 6.0, true)
+	var charge := clampf(float(g.energy) / 100.0, 0.0, 1.0)
+	var charge_col: Color = UI.MINT if ready else UI.CYAN
+	c.draw_arc(center, r - 6.0, -PI * 0.5, -PI * 0.5 + TAU * charge, 48, charge_col, 6.0, true)
+	if charge > 0.01 and charge < 1.0:
+		c.draw_circle(center + Vector2.from_angle(-PI * 0.5 + TAU * charge) * (r - 6.0), 5.0, charge_col.lightened(0.5))
 	UI.icon(c, ICON_WAVE, center + Vector2(0, -12), 70.0, Color.WHITE if ready else Color(1, 1, 1, 0.45))
 	UI.text(c, "NOVA" if ready else "%d%%" % int(g.energy), center + Vector2(0, 34), 20, UI.WHITE if ready else UI.TEXT_DIM, true, UI.CENTER)
 
@@ -326,7 +342,15 @@ func _paint_card(c: UILayer, i: int, id: String, x: float, y: float, w: float, h
 	var fill := Color(color.darkened(0.8), 0.98 * fade)
 	if picked:
 		fill = color.darkened(0.45)
-	UI.panel(c, r, fill, Color(color, 0.95 * fade), 18, 3 if rarity < Cards.EVOLVED else 5, 16 if picked or rarity >= Cards.EPIC else 0)
+	# Common and uncommon cards are plain glass, rare and epic are lit, evolved and legendary are gold. A picked card glows.
+	var card_kind: int = UI.Kind.CARD
+	if picked:
+		card_kind = UI.Kind.SELECTED
+	elif rarity >= Cards.EVOLVED:
+		card_kind = UI.Kind.REWARD
+	elif rarity >= Cards.RARE:
+		card_kind = UI.Kind.SELECTED
+	UI.glass(c, r, card_kind, color, {"fill": fill, "chamfer": 18, "alpha": fade, "glow": 14 if picked else (8 if rarity >= Cards.EPIC else 0), "border_alpha": 0.95 if rarity >= Cards.RARE else 0.6, "accent_set": true})
 	var icon_at := r.position + Vector2(92, h * 0.5)
 	UI.glow(c, icon_at, 92.0, Color(color, 0.3 * fade))
 	UI.icon(c, Cards.ICONS[def.icon], icon_at, 118.0, Color(1, 1, 1, fade))
@@ -399,7 +423,7 @@ func _paint_results(c: UILayer) -> void:
 	y = _paint_loot(c, x, y, w, k)
 	var shown := mini((g.rewards as Array).size(), 4)
 	for i in range(shown):
-		_paint_reward(c, Rect2(x, y, w, 66), g.rewards[i], k)
+		_paint_reward(c, Rect2(x, y, w, 66), g.rewards[i], k, i)
 		y += 74.0
 	if (g.rewards as Array).size() > shown:
 		UI.text(c, "+%d more rewards" % ((g.rewards as Array).size() - shown), Vector2(W * 0.5, y + 12.0), 19, Color(UI.GOLD, k), false, UI.CENTER)
@@ -488,10 +512,12 @@ func _stat_row(c: UILayer, x: float, y: float, w: float, label: String, value: S
 	UI.text(c, value, Vector2(x + w - 36.0, y), 30, Color(color, k), true, UI.RIGHT)
 	return y + 46.0
 
-func _paint_reward(c: UILayer, r: Rect2, reward: Dictionary, k: float) -> void:
-	UI.panel(c, r, Color(0.1, 0.08, 0.02, 0.96 * k), Color(UI.GOLD, 0.9 * k), 14, 3, 10)
+func _paint_reward(c: UILayer, r: Rect2, reward: Dictionary, k: float, index: int = 0) -> void:
+	UI.glass(c, r, UI.Kind.REWARD, UI.GOLD, {"chamfer": 14, "alpha": k})
 	UI.text(c, str(reward.title), r.position + Vector2(26, 28), 19, Color(UI.GOLD, k), true)
-	UI.text(c, str(reward.detail), r.position + Vector2(26, 54), 23, Color(UI.WHITE, k), false)
+	UI.fit_text(c, str(reward.detail), r.position + Vector2(26, 54), 23, 14, r.size.x - 52.0, Color(UI.WHITE, k), false)
+	# Each reward gets one glint as it arrives.
+	UI.shine(c, r, (float(g.phase_t) - 1.2 - float(index) * 0.25) / 0.9, UI.GOLD.lightened(0.4))
 
 func _result_buttons(c: UILayer, x: float, y: float, w: float, win: bool) -> void:
 	var half := (w - 20.0) * 0.5
@@ -524,6 +550,8 @@ func _paint_pause(c: UILayer) -> void:
 		UI.star(c, Vector2(W * 0.5 - UI.width_of(obj, 21) * 0.5 - 20.0, y + 68.0), 11.0, UI.GOLD)
 		UI.text(c, obj, Vector2(W * 0.5, y + 76.0), 21, UI.TEXT_DIM, false, UI.CENTER)
 	y += 104.0
+	var stack := 120.0 + (100.0 if g.mode != "expedition" else 0.0) + 96.0 + 106.0
+	UI.glass(c, Rect2(x - 22.0, y - 16.0, w + 44.0, stack - 2.0), UI.Kind.INFO, UI.CYAN, {"chamfer": 18, "alpha": 0.9})
 	c.button("resume", Rect2(x, y, w, 104), "RESUME", UI.MINT, {"primary": true, "icon": ICON_PLAY, "size": 36})
 	y += 120.0
 	if g.mode != "expedition":
@@ -535,7 +563,7 @@ func _paint_pause(c: UILayer) -> void:
 	c.button("music", Rect2(x, y, half, 80), "MUSIC ON" if music_on else "MUSIC OFF", UI.CYAN if music_on else Color(0.5, 0.54, 0.64), {"size": 22})
 	c.button("sound", Rect2(x + half + 18.0, y, half, 80), "SOUND ON" if sound_on else "SOUND OFF", UI.CYAN if sound_on else Color(0.5, 0.54, 0.64), {"size": 22})
 	y += 96.0
-	c.button("map", Rect2(x, y, w, 84), "QUIT FLIGHT", UI.RED, {"icon": ICON_HOME, "size": 27, "sound": "ui_back"})
+	c.button("map", Rect2(x, y, w, 84), "QUIT FLIGHT", UI.RED, {"icon": ICON_HOME, "size": 27, "sound": "ui_back", "warning": true})
 	y += 106.0
 	if not (g.held as Dictionary).is_empty():
 		UI.text(c, "YOUR BUILD", Vector2(W * 0.5, y), 19, UI.TEXT_DIM, true, UI.CENTER)

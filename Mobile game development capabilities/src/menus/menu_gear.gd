@@ -8,6 +8,7 @@ var m
 var filter := ""
 var fresh: Array = []
 var confirm_uid := 0
+var veil_i := 0
 
 func _init(hub) -> void:
 	m = hub
@@ -68,6 +69,7 @@ func _scrap(arg: String) -> void:
 
 ## Draws the tab and returns the y just below it.
 func paint(c: UILayer, x: float, y: float, w: float) -> float:
+	veil_i = 0
 	var ship: String = Save.ship
 	UI.outlined(c, "EQUIPPED ON %s" % str(Ships.LIST[ship].name), Vector2(x + 4.0, y + 22.0), 21, UI.CYAN, true)
 	y += 36.0
@@ -90,7 +92,7 @@ func paint(c: UILayer, x: float, y: float, w: float) -> float:
 	var cw := (w - 18.0) / 4.0
 	for i in range(chips.size()):
 		var on: bool = (filter == "" and chips[i][0] == "all") or filter == chips[i][0]
-		c.button("g_filter_" + str(chips[i][0]), Rect2(x + float(i) * (cw + 6.0), y, cw, 54), str(chips[i][1]), UI.MINT if on else UI.CYAN, {"primary": on, "size": 16})
+		c.button("g_filter_" + str(chips[i][0]), Rect2(x + float(i) * (cw + 6.0), y, cw, 54), str(chips[i][1]), UI.MINT if on else UI.CYAN, {"selected": on, "size": 16})
 	y += 68.0
 	var bag: Array = []
 	for it in Save.gear:
@@ -120,6 +122,8 @@ func _empty_slot(c: UILayer, x: float, y: float, w: float, slot: String) -> floa
 	UIArt.draw(c, slot, r.position + Vector2(52, h * 0.5), 66.0, {"animate": false, "tint": UIArt.GHOST})
 	UI.text(c, "EMPTY " + str(Gear.SLOT_INFO[slot].name), r.position + Vector2(104, 40), 22, UI.TEXT_DIM, true)
 	UI.text(c, "Equip gear from your bag below", r.position + Vector2(104, 68), 18, UI.TEXT_DIM)
+	UI.enter_veil(c, r, float(m.screen_t), mini(veil_i, 8))
+	veil_i += 1
 	return y + h + 10.0
 
 func _card(c: UILayer, item: Dictionary, x: float, y: float, w: float, equipped: bool) -> float:
@@ -183,7 +187,9 @@ func _card(c: UILayer, item: Dictionary, x: float, y: float, w: float, equipped:
 			c.button("g_used_%d" % uid, Rect2(bx, r.position.y + 86.0, 150, 62), "ON " + str(Ships.LIST[other].name), Color(0.5, 0.54, 0.64), {"size": 15, "disabled": true})
 		else:
 			var sure := confirm_uid == uid
-			c.button("g_scrap_%d" % uid, Rect2(bx, r.position.y + 86.0, 150, 62), "SURE?" if sure else "SCRAP", UI.RED if sure else UI.ORANGE, {"size": 19, "sub": "+%d parts" % Gear.scrap_value(item), "sound": ""})
+			c.button("g_scrap_%d" % uid, Rect2(bx, r.position.y + 86.0, 150, 62), "SURE?" if sure else "SCRAP", UI.RED if sure else UI.ORANGE, {"size": 19, "sub": "+%d parts" % Gear.scrap_value(item), "sound": "", "warning": sure})
+	UI.enter_veil(c, r, float(m.screen_t), mini(veil_i, 8))
+	veil_i += 1
 	return y + h + 10.0
 
 ## A small triangle and number showing whether this beats what you wear.

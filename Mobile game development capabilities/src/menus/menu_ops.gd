@@ -69,7 +69,7 @@ func paint(c: UILayer) -> void:
 	var tw := (w - 18.0) / 4.0
 	for i in range(tabs.size()):
 		var on: bool = tab == tabs[i][0]
-		c.button("tab_" + str(tabs[i][0]), Rect2(x + float(i) * (tw + 6.0), float(m.top) + 186.0, tw, 62), str(tabs[i][1]), UI.MINT if on else UI.CYAN, {"primary": on, "size": 20})
+		c.button("tab_" + str(tabs[i][0]), Rect2(x + float(i) * (tw + 6.0), float(m.top) + 186.0, tw, 62), str(tabs[i][1]), UI.MINT if on else UI.CYAN, {"selected": on, "size": 20})
 
 func _section(c: UILayer, x: float, y: float, text: String) -> float:
 	UI.outlined(c, text, Vector2(x + 4.0, y + 22.0), 21, UI.TEXT_DIM, true)
@@ -85,10 +85,11 @@ func _paint_today(c: UILayer, x: float, y: float, w: float) -> float:
 		var r := Rect2(x, y, w, h - 10.0)
 		var color: Color = UI.MINT if con.done else UI.CYAN
 		UI.panel(c, r, Color(0.03, 0.05, 0.12, 0.93), Color(color, 0.5), 14, 2)
-		UI.text(c, str(con.text), r.position + Vector2(22, 38), 22, UI.WHITE, true)
+		UI.fit_text(c, str(con.text), r.position + Vector2(22, 38), 22, 15, w - 230.0, UI.WHITE, true)
 		var ratio := float(con.progress) / float(con.goal)
 		UI.bar(c, Rect2(r.position + Vector2(22, 56), Vector2(w - 230.0, 16)), ratio, color)
 		UI.text(c, "%d/%d" % [mini(int(con.progress), int(con.goal)), con.goal], r.position + Vector2(22, 90 - 2), 16, UI.TEXT_DIM)
+		UI.enter_veil(c, r, float(m.screen_t), mini(i, 6))
 		var br := Rect2(r.end.x - 176, r.position.y + 16.0, 160, 62)
 		if con.claimed:
 			c.button("done%d" % i, br, "DONE", UI.MINT, {"size": 20, "disabled": true})
@@ -118,6 +119,7 @@ func _challenge_card(c: UILayer, x: float, y: float, w: float, id: String, title
 	UI.text(c, " + ".join(names), r.position + Vector2(22, 98), 18, UI.ORANGE, true)
 	var best := int(data.best)
 	UI.text(c, "BEST %d" % best if best > 0 else "First clear: +%d" % int(data.reward), r.position + Vector2(22, 130), 18, UI.GOLD)
+	UI.enter_veil(c, r, float(m.screen_t), 3 if id == "daily" else 4)
 	c.button(id, Rect2(r.end.x - 176, r.position.y + 42.0, 160, 72), "FLY", color, {"primary": true, "size": 26})
 	if not feat.is_empty():
 		# One optional extra, the same for everyone today: switch it on to fly it.

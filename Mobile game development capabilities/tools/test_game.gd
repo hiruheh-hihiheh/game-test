@@ -83,6 +83,7 @@ func _run() -> void:
 	await _test_gear_systems()
 	await _test_tiers_and_rift()
 	await _test_danger()
+	await _test_glass_ui()
 	await _test_expedition()
 	await _test_endless()
 	_reset_progress()
@@ -797,6 +798,120 @@ func _test_danger() -> void:
 ## A campaign session with contracts, and optionally dials.
 func _dsession(n: int, picks: Array, dials := []) -> Dictionary:
 	return {"mode": "campaign", "level": n, "mutators": dials, "tier": 0, "danger": picks}
+
+## The glass interface: accessibility switches, every button still present and where it is drawn,
+## scrolling that carries hit areas along, a real touch on a segmented control, and every screen
+## painting under each combination of comfort settings.
+func _test_glass_ui() -> void:
+	var U = load("res://src/ui.gd")
+	save.opt.reduced_motion = false
+	save.opt.reduced_flash = false
+	check(U.motion_ok() and U.flash_ok(), "motion and flashes are on by default")
+	save.opt.reduced_flash = true
+	check(U.motion_ok() and not U.flash_ok() and is_equal_approx(U.breathe(), 0.6), "Reduce flashes steadies every pulse but keeps motion")
+	save.opt.reduced_motion = true
+	check(not U.motion_ok() and not U.flash_ok() and is_equal_approx(U.breathe(), 0.6), "Reduce motion turns off ambient animation")
+	save.opt.reduced_motion = false
+	save.opt.reduced_flash = false
+	check(is_zero_approx(U.ease_out(0.0)) and is_equal_approx(U.ease_out(1.0), 1.0) and U.ease_out(0.5) > 0.5, "easing runs from 0 to 1 and starts fast")
+	for kind in [U.Kind.INFO, U.Kind.CARD, U.Kind.SELECTED, U.Kind.PRIMARY, U.Kind.DISABLED, U.Kind.REWARD, U.Kind.WARNING]:
+		check(int(kind) >= 0, "panel kind exists")
+	check(U.Kind.size() == 7, "seven panel kinds")
+
+	var menu = load("res://title_screen.tscn").instantiate()
+	root.add_child(menu)
+	await process_frame
+	save.unlocked = 30
+	# Every button a player can press is still there, with a real hit area.
+	var expected := {
+		"title": ["play", "hangar", "ops", "expedition", "endless", "settings"],
+		"hangar": ["back", "tab_ships", "tab_gear", "tab_lab", "tab_tech", "tab_nova", "ship_nova"],
+		"ops": ["back", "tab_today", "tab_awards", "tab_codex", "tab_records", "daily", "weekly"],
+		"settings": ["back", "set_music_volume:0.4", "set_nova_side:left", "set_sensitivity:1.7", "set_sfx_volume:0.7"],
+		"map": ["back", "prev", "next", "level1"],
+		"expedition": ["back", "start1", "start2"],
+	}
+	for screen_name in expected:
+		menu.go(screen_name)
+		for i in range(6):
+			await process_frame
+		for id in expected[screen_name]:
+			var rect: Rect2 = menu.ui.rect_of(str(id))
+			check(rect.size.x >= 40.0 and rect.size.y >= 40.0, "button %s on %s keeps a touch-sized hit area" % [id, screen_name])
+	menu.pages.hangar.on_ui("tab_gear")
+	menu.go("hangar")
+	menu.pages.hangar.on_ui("tab_gear")
+	for i in range(4):
+		await process_frame
+	for id in ["g_scrap_low", "g_filter_all", "g_filter_weapon"]:
+		check(menu.ui.rect_of(id).size.y >= 48.0, "gear button %s is present" % id)
+	menu.pages.hangar.on_ui("tab_nova")
+	for i in range(4):
+		await process_frame
+	check(menu.ui.rect_of("nova_pulse").size.y >= 100.0, "Nova row is pressable")
+	menu.pages.map.open_level(3)
+	for i in range(4):
+		await process_frame
+	for id in ["launch", "back"]:
+		check(menu.ui.rect_of(id).size.x >= 80.0, "briefing button %s is present" % id)
+	check(menu.ui.rect_of("danger_rush").size.y >= 90.0, "contract cards are pressable")
+	check(menu.ui.rect_of("launch").end.y <= float(menu.H) - float(menu.bottom) + 1.0, "Launch stays inside the safe area")
+
+	# Scrolling carries the hit areas with it.
+	menu.go("settings")
+	for i in range(5):
+		await process_frame
+	check(menu.ui.scroll_max > 100.0, "the settings page scrolls (%.0f)" % menu.ui.scroll_max)
+	var before: Rect2 = menu.ui.rect_of("set_nova_side:left")
+	menu.ui.scroll = 150.0
+	for i in range(3):
+		await process_frame
+	var after: Rect2 = menu.ui.rect_of("set_nova_side:left")
+	check(absf((before.position.y - after.position.y) - 150.0) < 1.0, "hit areas move with the scroll")
+	menu.ui.scroll = 0.0
+	for i in range(3):
+		await process_frame
+	# A real touch on a segmented control.
+	var seg: Rect2 = menu.ui.rect_of("set_nova_side:left")
+	var down := InputEventScreenTouch.new()
+	down.index = 0
+	down.position = seg.get_center()
+	down.pressed = true
+	menu.ui._input(down)
+	var up := InputEventScreenTouch.new()
+	up.index = 0
+	up.position = seg.get_center()
+	up.pressed = false
+	menu.ui._input(up)
+	check(str(save.opt.nova_side) == "left", "touching a segment sets the option")
+	menu.pages.settings.on_ui("set_nova_side:right")
+
+	# Every screen paints under each combination of comfort settings.
+	for combo in [[false, false, 1.0, false], [true, false, 1.0, false], [false, true, 1.0, true], [true, true, 1.12, true]]:
+		save.opt.reduced_motion = combo[0]
+		save.opt.reduced_flash = combo[1]
+		save.opt.ui_scale = combo[2]
+		save.opt.colorblind = combo[3]
+		save.apply_display()
+		for screen_name in ["title", "hangar", "map", "ops", "settings", "expedition"]:
+			menu.go(screen_name)
+			if screen_name == "hangar":
+				for tab in ["ships", "gear", "lab", "tech", "nova"]:
+					menu.pages.hangar.on_ui("tab_" + tab)
+					await process_frame
+					await process_frame
+			for i in range(3):
+				await process_frame
+		check(menu.ui.rect_of("back").size.x >= 40.0 or menu.screen == "title", "screens still lay out with motion=%s flashes=%s scale=%.2f" % [str(combo[0]), str(combo[1]), combo[2]])
+	save.opt.reduced_motion = false
+	save.opt.reduced_flash = false
+	save.opt.ui_scale = 1.0
+	save.opt.colorblind = false
+	save.apply_display()
+	menu.queue_free()
+	await process_frame
+	save.unlocked = 1
+	print("glass ui ok")
 
 func _test_gear_data() -> void:
 	var rng := RandomNumberGenerator.new()

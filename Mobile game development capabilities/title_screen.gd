@@ -217,22 +217,29 @@ func _paint_fx(c: DrawLayer) -> void:
 		c.draw_texture_rect(UI.glow_tex(), Rect2((s.pos as Vector2) - Vector2(size, size), Vector2(size, size) * 2.0), false, Color(s.color, a))
 
 func _ship_pos() -> Vector2:
-	return Vector2(W * 0.5 + sin(t * 0.9) * 10.0, H * 0.43 + sin(t * 1.3) * 12.0 - launching * launching * 900.0)
+	var m := 1.0 if UI.motion_ok() else 0.0
+	return Vector2(W * 0.5 + sin(t * 0.9) * 10.0 * m, H * 0.43 + sin(t * 1.3) * 12.0 * m - launching * launching * 900.0)
 
 func _paint(c: UILayer) -> void:
 	if screen == "title":
 		_paint_title(c)
 	elif pages.has(screen):
 		pages[screen].paint(c)
-	var fade := 1.0 - clampf(screen_t * 7.0, 0.0, 1.0)
+	var k := clampf(screen_t / 0.26, 0.0, 1.0)
+	var fade := (1.0 - UI.ease_out(k)) if UI.motion_ok() else (1.0 - clampf(screen_t * 7.0, 0.0, 1.0))
 	if fade > 0.0:
 		c.draw_rect(Rect2(0, 0, W, H), Color(0.01, 0.01, 0.04, fade))
+	if k < 1.0 and UI.flash_ok() and screen != "title":
+		# A thin line of light sweeps down the new page as it arrives.
+		var sy := H * UI.ease_out(k)
+		c.draw_rect(Rect2(0, sy - 1.0, W, 2.0), Color(UI.CYAN, 0.30 * (1.0 - k)))
+		c.draw_rect(Rect2(0, sy - 36.0, W, 36.0), Color(UI.CYAN, 0.05 * (1.0 - k)))
 
 func salvage_chip(c: UILayer, right: float, y: float) -> void:
 	var value := str(Save.salvage)
 	var w := UI.width_of(value, 28, true) + 74.0
 	var r := Rect2(right - w, y, w, 56)
-	UI.panel(c, r, Color(0.02, 0.04, 0.1, 0.84), Color(UI.MINT, 0.5), 12, 2)
+	UI.glass(c, r, UI.Kind.CARD, UI.MINT, {"chamfer": 12})
 	UI.icon(c, SALVAGE_ART, r.position + Vector2(32, 28), 40.0)
 	UI.text(c, value, r.position + Vector2(58, 39), 28, UI.WHITE, true)
 
@@ -248,7 +255,7 @@ func header(c: UILayer, title: String, accent: Color) -> float:
 func pilot_chip(c: UILayer, x: float, y: float) -> void:
 	var info: Dictionary = Pilot.level_of(Save.pilot_xp)
 	var r := Rect2(x, y, 190, 56)
-	UI.panel(c, r, Color(0.02, 0.04, 0.1, 0.84), Color(UI.CYAN, 0.5), 12, 2)
+	UI.glass(c, r, UI.Kind.CARD, UI.CYAN, {"chamfer": 12})
 	UIArt.draw(c, "rank", r.position + Vector2(27, 20), 26.0, {"animate": false})
 	UI.text(c, "PILOT %d" % int(info.level), r.position + Vector2(48, 25), 20, UI.WHITE, true)
 	UI.bar(c, Rect2(r.position + Vector2(14, 34), Vector2(162, 12)), float(info.into) / float(info.need), UI.CYAN)
@@ -260,7 +267,7 @@ func badge(c: UILayer, card: Rect2, count: int) -> void:
 	var label := str(count) if count < 100 else "99+"
 	var w := maxf(34.0, UI.width_of(label, 20, true) + 20.0)
 	var r := Rect2(card.end.x - 14.0 - w, card.position.y + 12.0, w, 30.0)
-	UI.panel(c, r, Color(0.78, 0.1, 0.2, 1.0), Color(1.0, 0.72, 0.74, 0.95), 15, 2)
+	c.draw_style_box(UI.box(Color(0.78, 0.1, 0.2, 1.0), Color(1.0, 0.72, 0.74, 0.95), 15, 2, 0), r)
 	UI.text(c, label, r.get_center() + Vector2(0, 7), 20, UI.WHITE, true, UI.CENTER)
 
 func _cheapest_upgrade_ready() -> bool:
@@ -278,17 +285,35 @@ func _paint_title(c: UILayer) -> void:
 	var title_y := top + H * 0.12
 	UI.glow_text(c, "STARFALL", Vector2(W * 0.5, title_y + (1.0 - enter) * -50.0), 92, UI.WHITE, UI.CYAN)
 	UI.glow_text(c, "SALVAGE", Vector2(W * 0.5, title_y + 84.0 + (1.0 - enter) * -50.0), 70, UI.ORANGE, UI.ORANGE)
+	# A fine rule with a diamond at each end frames the name.
+	var rule_y := title_y + 62.0 + (1.0 - enter) * -50.0
+	for side in [-1.0, 1.0]:
+		UI.rule(c, Vector2(W * 0.5 + side * 196.0, rule_y), Vector2(W * 0.5 + side * 318.0, rule_y), UI.ORANGE, 0.7)
+		c.draw_colored_polygon(PackedVector2Array([Vector2(W * 0.5 + side * 188.0, rule_y - 5.0), Vector2(W * 0.5 + side * 193.0, rule_y), Vector2(W * 0.5 + side * 188.0, rule_y + 5.0), Vector2(W * 0.5 + side * 183.0, rule_y)]), Color(UI.ORANGE, 0.85))
 	var radius := 176.0
+	# The ship stands on a holographic pad: a soft light cone, a glowing disc and two squashed rings.
+	var pad := Vector2(W * 0.5, H * 0.43 + 156.0)
+	c.draw_polygon(PackedVector2Array([Vector2(pad.x - 34.0, ship.y + 60.0), Vector2(pad.x + 34.0, ship.y + 60.0), Vector2(pad.x + 120.0, pad.y), Vector2(pad.x - 120.0, pad.y)]), PackedColorArray([Color(UI.CYAN, 0.0), Color(UI.CYAN, 0.0), Color(UI.CYAN, 0.13), Color(UI.CYAN, 0.13)]))
+	c.draw_texture_rect(UI.glow_tex(), Rect2(pad.x - 170.0, pad.y - 38.0, 340.0, 76.0), false, Color(UI.CYAN, 0.42))
+	c.draw_set_transform(pad, 0.0, Vector2(1.0, 0.26))
+	c.draw_arc(Vector2.ZERO, 128.0, 0.0, TAU, 56, Color(UI.CYAN, 0.55), 2.5, true)
+	c.draw_arc(Vector2.ZERO, 92.0, 0.0, TAU, 48, Color(UI.CYAN, 0.30), 2.0, true)
+	if UI.flash_ok():
+		var sweep := fmod(t * 0.7, 1.0)
+		c.draw_arc(Vector2.ZERO, 40.0 + 90.0 * sweep, 0.0, TAU, 48, Color(UI.CYAN, 0.5 * (1.0 - sweep)), 2.0, true)
+	c.draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
+	var ship_def: Dictionary = Ships.LIST[Save.ship]
+	UI.chip(c, Vector2(W * 0.5, pad.y + 52.0), "%s  ·  %s" % [str(ship_def.name), str(ship_def.role)], 17, UI.CYAN, UI.CENTER)
 	for i in range(3):
-		var spin := t * (0.35 + float(i) * 0.14) * (1.0 if i % 2 == 0 else -1.0)
+		var spin := (t * (0.35 + float(i) * 0.14) * (1.0 if i % 2 == 0 else -1.0)) if UI.motion_ok() else float(i) * 1.7
 		var r := radius - float(i) * 32.0
 		var col: Color = [UI.CYAN, UI.MAGENTA, UI.MINT][i]
 		for k in range(3):
 			var a := spin + float(k) * TAU / 3.0
 			c.draw_arc(ship, r, a, a + 1.2, 28, Color(col, 0.5), 3.0, true)
 	UI.glow(c, ship, 220.0, Color(UI.CYAN, 0.17))
-	c.draw_set_transform(ship, sin(t * 0.8) * 0.04, Vector2.ONE)
-	c.draw_texture_rect(Ships.ART.get(Save.ship, Ships.ART.nova), Rect2(-112, -112, 224, 224), false)
+	c.draw_set_transform(ship, sin(t * 0.8) * 0.04 * (1.0 if UI.motion_ok() else 0.0), Vector2.ONE)
+	c.draw_texture_rect(Ships.ART.get(Save.ship, Ships.ART.nova), Rect2(-126, -126, 252, 252), false)
 	c.draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
 
 	var w := minf(W - 64.0, 630.0)
@@ -309,9 +334,15 @@ func _paint_title(c: UILayer) -> void:
 	c.button("expedition", Rect2(x, y, half, 94), "EXPEDITION", UI.MAGENTA, {"art": "expedition", "art_size": 60, "size": 23, "sub": exp_sub, "disabled": not exp_open})
 	c.button("endless", Rect2(x + half + 18.0, y, half, 94), "RIFT", UI.GOLD, {"art": "rift", "art_size": 60, "size": 23, "sub": end_sub, "disabled": not end_open})
 	y += 112.0
-	UI.star(c, Vector2(x + 20.0, y + 13.0), 15.0, UI.GOLD)
-	UI.outlined(c, "%d / %d" % [Save.total_stars(), Levels.LEVEL_COUNT * 3], Vector2(x + 44.0, y + 23.0), 22, UI.WHITE, false)
-	UI.outlined(c, str(Meta.season().name), Vector2(x + w, y + 23.0), 20, UI.TEXT_DIM, false, UI.RIGHT)
+	var stars_text := "%d / %d" % [Save.total_stars(), Levels.LEVEL_COUNT * 3]
+	var star_chip := Rect2(x, y - 8.0, UI.width_of(stars_text, 21, true) + 66.0, 40.0)
+	UI.glass(c, star_chip, UI.Kind.CARD, UI.GOLD, {"chamfer": 10})
+	UI.star(c, star_chip.position + Vector2(22.0, 20.0), 13.0, UI.GOLD)
+	UI.text(c, stars_text, star_chip.position + Vector2(44.0, 28.0), 21, UI.WHITE, true)
+	var season_text := str(Meta.season().name)
+	var season_w := UI.width_of(season_text, 18, true) + 34.0
+	UI.glass(c, Rect2(x + w - season_w, y - 8.0, season_w, 40.0), UI.Kind.INFO, UI.CYAN, {"chamfer": 10})
+	UI.text(c, season_text, Vector2(x + w - season_w * 0.5, y + 19.0), 18, UI.TEXT_DIM, true, UI.CENTER)
 	c.button("settings", Rect2(W - 104, top, 84, 84), "", UI.WHITE, {"icon": ICON_SETTINGS})
 	salvage_chip(c, W - 124.0, top + 14.0)
 	pilot_chip(c, 20.0, top + 14.0)

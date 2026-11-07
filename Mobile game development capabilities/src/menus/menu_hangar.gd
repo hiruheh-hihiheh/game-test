@@ -89,9 +89,10 @@ func paint(c: UILayer) -> void:
 	c.draw_rect(Rect2(0, float(m.top) + 178.0, W, 76.0), Color(0.01, 0.01, 0.05, 0.86))
 	for i in range(tabs.size()):
 		var on: bool = tab == tabs[i][0]
-		c.button("tab_" + str(tabs[i][0]), Rect2(x + float(i) * (tw + 6.0), float(m.top) + 186.0, tw, 62), str(tabs[i][1]), UI.MINT if on else UI.CYAN, {"primary": on, "size": 19})
+		c.button("tab_" + str(tabs[i][0]), Rect2(x + float(i) * (tw + 6.0), float(m.top) + 186.0, tw, 62), str(tabs[i][1]), UI.MINT if on else UI.CYAN, {"selected": on, "size": 19})
 
 func _paint_ships(c: UILayer, x: float, y: float, w: float) -> float:
+	var idx := 0
 	for id in Ships.ORDER:
 		var ship: Dictionary = Ships.LIST[id]
 		var h := 176.0
@@ -104,6 +105,10 @@ func _paint_ships(c: UILayer, x: float, y: float, w: float) -> float:
 		UI.panel(c, r, Color(color.darkened(0.8), 0.95), Color(color, 0.95 if on else 0.4), 16, 3 if on else 2)
 		var at := r.position + Vector2(88, h * 0.5)
 		UI.glow(c, at, 90.0, Color(color, 0.25))
+		# A glowing landing pad under each ship, brighter for the active one.
+		c.draw_texture_rect(UI.glow_tex(), Rect2(at.x - 72.0, at.y + 46.0, 144.0, 30.0), false, Color(color, 0.55 if on else 0.2))
+		if on:
+			UI.chip(c, r.position + Vector2(88.0, h - 15.0), "ACTIVE", 12, UI.MINT, UI.CENTER)
 		var tint := Color.WHITE if owned else (Color(0.6, 0.6, 0.7) if available else Color(0.1, 0.1, 0.16))
 		UI.icon(c, Ships.ART[id], at, 138.0, tint)
 		var tx := r.position.x + 172.0
@@ -125,6 +130,8 @@ func _paint_ships(c: UILayer, x: float, y: float, w: float) -> float:
 			UI.text(c, "UNLOCK: %d SALVAGE" % int(ship.cost), Vector2(tx, foot), 18, UI.GOLD if Save.salvage >= int(ship.cost) else UI.TEXT_DIM, true)
 		else:
 			UI.text(c, "BLUEPRINT NEEDED: BEAT A BOSS", Vector2(tx, foot), 17, UI.TEXT_DIM, true)
+		UI.enter_veil(c, r, float(m.screen_t), mini(idx, 8))
+		idx += 1
 		y += h + 12.0
 	return _paint_paints(c, x, y, w)
 
@@ -143,13 +150,14 @@ func _paint_paints(c: UILayer, x: float, y: float, w: float) -> float:
 		var r := Rect2(x + float(i) * (cell + 10.0), y, cell, 66)
 		var on := Save.paint_of(Save.ship) == id
 		if open:
-			c.button("paint_" + id, r, str(Ships.PAINTS[id].name), UI.MINT if on else UI.CYAN, {"size": 14, "primary": on})
+			c.button("paint_" + id, r, str(Ships.PAINTS[id].name), UI.MINT if on else UI.CYAN, {"size": 14, "selected": on})
 		else:
 			UI.panel(c, r, Color(0.02, 0.03, 0.07, 0.7), Color(0.4, 0.44, 0.54, 0.3), 12, 2)
 			UI.text(c, "LOCKED", r.get_center() + Vector2(0, 6), 14, Color(0.5, 0.54, 0.62), true, UI.CENTER)
 	return y + 80.0
 
 func _paint_items(c: UILayer, x: float, y: float, w: float, kind: String) -> float:
+	var idx := 0
 	for item in Hangar.LIST:
 		if str(item.kind) != kind:
 			continue
@@ -189,6 +197,8 @@ func _paint_items(c: UILayer, x: float, y: float, w: float, kind: String) -> flo
 		else:
 			var cost := Hangar.cost(id, lvl)
 			c.button("buy_" + id, br, str(cost), UI.GOLD if Save.salvage >= cost else Color(0.5, 0.54, 0.64), {"icon": m.SALVAGE_ART, "size": 23, "sound": ""})
+		UI.enter_veil(c, r, float(m.screen_t), mini(idx, 8))
+		idx += 1
 		y += h
 	return y
 
@@ -200,6 +210,7 @@ func _lab_header(c: UILayer, x: float, y: float, w: float) -> float:
 	return y + 74.0
 
 func _paint_nova(c: UILayer, x: float, y: float, w: float) -> float:
+	var idx := 0
 	for id in Ships.NOVA_MODES:
 		var def: Dictionary = Ships.NOVA_MODES[id]
 		var open := Save.has_blueprint(str(def.blueprint))
@@ -222,5 +233,7 @@ func _paint_nova(c: UILayer, x: float, y: float, w: float) -> float:
 			UI.text(c, lines[l], Vector2(tx, r.position.y + 76.0 + float(l) * 26.0), 19, UI.TEXT_DIM)
 		if on:
 			UI.text(c, "EQUIPPED", r.position + Vector2(w - 24.0, 42), 18, UI.MINT, true, UI.RIGHT)
+		UI.enter_veil(c, r, float(m.screen_t), idx)
+		idx += 1
 		y += h + 12.0
 	return y

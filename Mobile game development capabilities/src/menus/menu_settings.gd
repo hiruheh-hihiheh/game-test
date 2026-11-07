@@ -4,6 +4,7 @@ extends RefCounted
 
 var m
 var confirm_reset := false
+var _slide := {}
 
 func _init(hub) -> void:
 	m = hub
@@ -76,26 +77,51 @@ func paint(c: UILayer) -> void:
 	y = _title(c, x, y, "DATA")
 	y = _steps(c, x, y, w, "Save balance log on device", "telemetry", [["OFF", false], ["ON", true]])
 	y += 10.0
-	c.button("reset", Rect2(x, y, w, 84), "TAP AGAIN TO ERASE EVERYTHING" if confirm_reset else "RESET PROGRESS", UI.RED, {"size": 23})
+	c.button("reset", Rect2(x, y, w, 84), "TAP AGAIN TO ERASE EVERYTHING" if confirm_reset else "RESET PROGRESS", UI.RED, {"size": 23, "warning": true})
 	y += 100.0
 	c.scroll_max = maxf(0.0, y + c.scroll - float(m.H) + float(m.bottom))
 	m.header(c, "SETTINGS", UI.CYAN)
 
 func _title(c: UILayer, x: float, y: float, text: String) -> float:
-	UI.outlined(c, text, Vector2(x + 4.0, y + 32.0), 21, UI.CYAN, true)
+	# A short accent bar, the section name, and a rule that fades out to the right.
+	c.draw_rect(Rect2(x + 2.0, y + 14.0, 4.0, 22.0), Color(UI.CYAN, 0.9))
+	UI.outlined(c, text, Vector2(x + 18.0, y + 32.0), 21, UI.CYAN, true)
+	UI.rule(c, Vector2(x + 30.0 + UI.width_of(text, 21, true), y + 24.0), Vector2(x + 680.0, y + 24.0), UI.CYAN, 0.45)
 	return y + 46.0
 
+## One option row: its name, and a glass segmented control whose lit segment slides to the choice.
 func _steps(c: UILayer, x: float, y: float, w: float, label: String, key: String, options: Array) -> float:
-	var r := Rect2(x, y, w, 118)
+	var r := Rect2(x, y, w, 112)
 	if y > -130.0 and y < float(m.H):
 		UI.panel(c, r, Color(0.03, 0.05, 0.12, 0.92), Color(UI.CYAN, 0.22), 12, 2)
-		UI.text(c, label, r.position + Vector2(20, 36), 22, UI.WHITE, true)
-		var gap := 8.0
-		var bw := (w - 40.0 - gap * float(options.size() - 1)) / float(options.size())
-		for i in range(options.size()):
+		UI.text(c, label, r.position + Vector2(20, 34), 22, UI.WHITE, true)
+		var track := Rect2(x + 16.0, y + 46.0, w - 32.0, 54.0)
+		c.draw_style_box(UI.box(Color(0.01, 0.02, 0.05, 0.85), Color(UI.CYAN, 0.28), 12, 1, 0), track)
+		var count := options.size()
+		var seg := track.size.x / float(count)
+		var active := 0
+		for i in range(count):
 			var value: Variant = options[i][1]
 			var on: bool = str(Save.opt[key]) == str(value)
 			if value is float and Save.opt[key] is float:
 				on = absf(float(Save.opt[key]) - float(value)) < 0.01
-			c.button("set_%s:%s" % [key, str(value)], Rect2(x + 20.0 + float(i) * (bw + gap), y + 50.0, bw, 56), str(options[i][0]), UI.MINT if on else UI.CYAN, {"primary": on, "size": 19})
-	return y + 128.0
+			if on:
+				active = i
+		var slide: float = float(_slide.get(key, float(active)))
+		slide = move_toward(slide, float(active), c.get_process_delta_time() * 14.0) if UI.motion_ok() else float(active)
+		_slide[key] = slide
+		var lit := Rect2(track.position.x + 3.0 + slide * seg, track.position.y + 3.0, seg - 6.0, track.size.y - 6.0)
+		UI.glass(c, lit, UI.Kind.SELECTED, UI.MINT, {"chamfer": 10})
+		for i in range(count):
+			var value: Variant = options[i][1]
+			var id := "set_%s:%s" % [key, str(value)]
+			var cell := Rect2(track.position.x + float(i) * seg, track.position.y, seg, track.size.y)
+			c.hit_area(id, cell)
+			var near := clampf(1.0 - absf(slide - float(i)), 0.0, 1.0)
+			if i > 0 and absf(slide - float(i)) > 1.0 and absf(slide - float(i - 1)) > 1.0:
+				c.draw_line(Vector2(cell.position.x, cell.position.y + 14.0), Vector2(cell.position.x, cell.end.y - 14.0), Color(UI.CYAN, 0.14), 1.0)
+			var press := c.press_amount(id)
+			if press > 0.0:
+				c.draw_rect(cell.grow(-3.0), Color(1, 1, 1, 0.12 * press))
+			UI.fit_text(c, str(options[i][0]), Vector2(cell.get_center().x - UI.width_of(str(options[i][0]), 19, true) * 0.5, cell.get_center().y + 7.0), 19, 13, seg - 12.0, UI.WHITE if near > 0.5 else UI.TEXT_DIM, true)
+	return y + 120.0

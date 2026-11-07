@@ -123,10 +123,10 @@ func _paint_map(c: UILayer) -> void:
 	m.salvage_chip(c, W - 20.0, top + 14.0)
 	if Save.tier_unlocked > 0:
 		var tier_color: Color = Tiers.cfg(tier).color
-		c.button("tier", Rect2(W - 190.0, top + 82.0, 170, 52), str(Tiers.cfg(tier).name), tier_color, {"size": 18, "primary": tier > 0})
+		c.button("tier", Rect2(W - 190.0, top + 82.0, 170, 52), str(Tiers.cfg(tier).name), tier_color, {"size": 18, "selected": tier > 0})
 	UI.glow_text(c, "SECTOR %d" % sector, Vector2(W * 0.5, top + 136.0), 44, UI.WHITE, accent)
 	UI.outlined(c, str(info.name), Vector2(W * 0.5, top + 176.0), 29, accent, true, UI.CENTER)
-	UI.outlined(c, "MECHANIC: " + str(info.mechanic), Vector2(W * 0.5, top + 208.0), 19, UI.TEXT_DIM, false, UI.CENTER)
+	UI.chip(c, Vector2(W * 0.5, top + 204.0), "MECHANIC: " + str(info.mechanic), 16, accent, UI.CENTER)
 	var first := (sector - 1) * Levels.LEVELS_PER_SECTOR + 1
 	var y_bottom: float = float(m.H) - float(m.bottom) - 200.0
 	var y_top: float = top + 290.0
@@ -135,7 +135,12 @@ func _paint_map(c: UILayer) -> void:
 		pts.append(_node_pos(i, y_bottom, y_top))
 	for i in range(Levels.LEVELS_PER_SECTOR - 1):
 		var done := first + i < Save.unlocked_at(tier)
-		c.draw_line(pts[i], pts[i + 1], Color(accent, 0.85) if done else Color(1, 1, 1, 0.14), 5.0 if done else 3.0, true)
+		if done:
+			# A cleared stretch of the route: a soft glow under a bright line.
+			c.draw_line(pts[i], pts[i + 1], Color(accent, 0.16), 13.0, true)
+			c.draw_line(pts[i], pts[i + 1], Color(accent, 0.9), 4.0, true)
+		else:
+			c.draw_dashed_line(pts[i], pts[i + 1], Color(1, 1, 1, 0.2), 3.0, 11.0)
 	if tier == 0:
 		_paint_side_node(c, sector, first, pts, accent)
 	for i in range(Levels.LEVELS_PER_SECTOR):
@@ -148,6 +153,11 @@ func _paint_map(c: UILayer) -> void:
 	UI.star(c, Vector2(W * 0.5 - 52.0, nav_y + 38.0), 18.0, UI.GOLD)
 	UI.outlined(c, "%d/30" % Save.sector_stars_at(tier, sector), Vector2(W * 0.5 - 26.0, nav_y + 49.0), 28, UI.WHITE, true)
 
+func _octagon(r: float, cut_k: float) -> PackedVector2Array:
+	var k := r * cut_k
+	return PackedVector2Array([Vector2(-r + k, -r), Vector2(r - k, -r), Vector2(r, -r + k), Vector2(r, r - k), Vector2(r - k, r), Vector2(-r + k, r), Vector2(-r, r - k), Vector2(-r, -r + k)])
+
+## A level node: a glass octagon. Cleared nodes show their stars, the current one pulses, locked ones are dark with a padlock.
 func _paint_node(c: UILayer, n: int, pos: Vector2, accent: Color) -> void:
 	var unlocked := Save.unlocked_at(tier)
 	var locked := n > unlocked
@@ -157,20 +167,47 @@ func _paint_node(c: UILayer, n: int, pos: Vector2, accent: Color) -> void:
 	var r := 56.0 if boss else (48.0 if elite else 42.0)
 	var id := "level%d" % n
 	c.hit_area(id, Rect2(pos - Vector2(r, r), Vector2(r, r) * 2.0), {"disabled": locked})
+	var mask := Save.mask_at(tier, n)
+	var edge: Color = Color(accent, 0.95) if not locked else Color(0.45, 0.5, 0.62, 0.45)
 	c.draw_set_transform(pos, 0.0, Vector2.ONE * (1.0 - c.press_amount(id) * 0.08))
 	if current:
-		UI.glow(c, Vector2.ZERO, r * 2.1 * (1.0 + sin(float(m.t) * 4.0) * 0.12), Color(accent, 0.55))
-	var fill: Color = accent.darkened(0.3) if current else (Color(accent.darkened(0.66), 0.97) if not locked else Color(0.05, 0.06, 0.1, 0.92))
-	var edge: Color = Color(accent, 0.98) if not locked else Color(0.4, 0.44, 0.54, 0.5)
-	UI.panel(c, Rect2(-r, -r, r * 2.0, r * 2.0), fill, edge, int(r * 0.42), 3)
+		var breathe := UI.breathe(2.2)
+		UI.glow(c, Vector2.ZERO, r * 2.1 * (0.92 + 0.12 * breathe), Color(accent, 0.45))
+		if UI.flash_ok():
+			var ring := fmod(UI.clock() * 0.6, 1.0)
+			c.draw_arc(Vector2.ZERO, r + 4.0 + ring * 18.0, 0.0, TAU, 40, Color(accent, 0.5 * (1.0 - ring)), 2.0, true)
+	var shape := _octagon(r, 0.36)
+	var top_c: Color = accent.darkened(0.2) if current else (accent.darkened(0.55) if not locked else Color(0.09, 0.11, 0.17))
+	var bottom_c: Color = accent.darkened(0.62) if current else (accent.darkened(0.78) if not locked else Color(0.04, 0.05, 0.09))
+	var fills := PackedColorArray()
+	for p in shape:
+		fills.append(top_c.lerp(bottom_c, clampf((p.y + r) / (r * 2.0), 0.0, 1.0)))
+	c.draw_polygon(shape, fills)
+	var rim := shape.duplicate()
+	rim.append(shape[0])
+	c.draw_polyline(rim, edge, 2.5 if (current or boss) else 1.8, true)
+	if not locked:
+		c.draw_polyline(PackedVector2Array([Vector2(-r + r * 0.36, -r + 4.0), Vector2(r - r * 0.36, -r + 4.0)]), Color(1, 1, 1, 0.2), 1.5)
+		var inner := _octagon(r - 7.0, 0.36)
+		inner.append(inner[0])
+		c.draw_polyline(inner, Color(accent, 0.28), 1.0, true)
 	if boss:
+		var outer := _octagon(r + 6.0, 0.36)
+		outer.append(outer[0])
+		c.draw_polyline(outer, Color(UI.RED if not locked else Color(0.4, 0.44, 0.54), 0.55), 1.5, true)
 		UI.icon(c, ICON_BOSS, Vector2.ZERO, r * 1.4, Color.WHITE if not locked else Color(1, 1, 1, 0.3))
 	else:
 		UI.text(c, str(n), Vector2(0, 11), 29, UI.WHITE if not locked else Color(0.5, 0.54, 0.62), true, UI.CENTER)
-	var mask := Save.mask_at(tier, n)
+	if elite and not boss:
+		c.draw_colored_polygon(PackedVector2Array([Vector2(0, -r - 14.0), Vector2(7, -r - 6.0), Vector2(0, -r + 2.0), Vector2(-7, -r - 6.0)]), Color(UI.MAGENTA, 0.9 if not locked else 0.3))
+	if locked:
+		# A small padlock in the corner.
+		var lp := Vector2(r * 0.62, -r * 0.62)
+		c.draw_rect(Rect2(lp + Vector2(-7, -2), Vector2(14, 11)), Color(0.55, 0.6, 0.72, 0.8))
+		c.draw_arc(lp + Vector2(0, -2), 5.0, PI, TAU, 10, Color(0.55, 0.6, 0.72, 0.8), 2.0, true)
 	if mask > 0:
 		for s in range(3):
-			UI.star(c, Vector2((float(s) - 1.0) * 26.0, r + 14.0), 12.0, UI.GOLD if mask & (1 << s) else Color(0.2, 0.22, 0.3))
+			UI.star(c, Vector2((float(s) - 1.0) * 26.0, r + 16.0), 12.0, UI.GOLD if mask & (1 << s) else Color(0.2, 0.22, 0.3))
 	c.draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
 
 ## The Black Box side mission branches off after the sector's elite.
@@ -206,6 +243,9 @@ func _paint_preflight(c: UILayer) -> void:
 	var x := (W - w) * 0.5
 	if not endless:
 		var def := Levels.build(level)
+		# The mission card: name, the three star goals and any special reward, on one glass panel.
+		var pending_reward: bool = not str(def.side_reward).is_empty() and not Save.has_blueprint(str(def.side_reward))
+		UI.glass(c, Rect2(x, y - 14.0, w, 34.0 + 90.0 + (30.0 if pending_reward else 0.0) + 22.0), UI.Kind.CARD, UI.CYAN, {"chamfer": 16})
 		UI.text(c, str(def.name), Vector2(W * 0.5, y + 16.0), 28, UI.WHITE, true, UI.CENTER)
 		y += 34.0
 		var obj: String = Levels.objective_text(def.obj)
@@ -220,6 +260,7 @@ func _paint_preflight(c: UILayer) -> void:
 		if not side_reward.is_empty() and not Save.has_blueprint(side_reward):
 			UI.text(c, "REWARD: " + str(Levels.BLUEPRINT_NAMES[side_reward]), Vector2(x + 24.0, y + 20.0), 20, UI.GOLD, true)
 			y += 30.0
+		y += 14.0
 	if mode == "campaign" and tier > 0:
 		var tier_color: Color = Tiers.cfg(tier).color
 		UI.text(c, "TIER: " + str(Tiers.cfg(tier).name), Vector2(x + 4.0, y + 24.0), 21, tier_color, true)

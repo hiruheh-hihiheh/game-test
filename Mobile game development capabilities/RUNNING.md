@@ -36,6 +36,7 @@ On a fresh clone, or after deleting `.godot/`, you can import without opening th
 |---|---|
 | [docs/DESIGN.md](docs/DESIGN.md) | How every system works and how to add content |
 | [docs/GRIND.md](docs/GRIND.md) | Gear, tiers, the Rift and pilot level: how they work and how to tune them |
+| [docs/GLASS_UI.md](docs/GLASS_UI.md) | The glass interface: parts, rules, accessibility, cost |
 | [docs/UI_ART.md](docs/UI_ART.md) | Where the menu illustrations are used and how they animate |
 | [docs/DANGER_CONTRACTS.md](docs/DANGER_CONTRACTS.md) | Optional risk contracts: rules, payouts, where they work |
 | [docs/ROADMAP_NEXT.md](docs/ROADMAP_NEXT.md) | Designs for the next five features |

@@ -119,7 +119,7 @@ func _paint_sectors(c: UILayer) -> void:
 		y += 100.0
 
 func _node_pos(layer: int, index: int, count: int) -> Vector2:
-	var y: float = float(m.H) - float(m.bottom) - 120.0 - float(layer) * ((float(m.H) - 500.0) / float(Expedition.LAYERS - 1))
+	var y: float = float(m.H) - float(m.bottom) - 160.0 - float(layer) * ((float(m.H) - 540.0) / float(Expedition.LAYERS - 1))
 	var w: float = float(m.W) - 200.0
 	var x: float = float(m.W) * 0.5 if count <= 1 else 100.0 + w * float(index) / float(count - 1)
 	return Vector2(x, y)
@@ -130,8 +130,8 @@ func _paint_route(c: UILayer) -> void:
 	var current: int = run.layer
 	var y: float = m.header(c, str(Levels.SECTORS[int(run.sector) - 1].name), Levels.SECTORS[int(run.sector) - 1].color)
 	var hull: int = int(run.hull)
-	UI.text(c, "HULL %s" % ("FULL" if hull < 0 else str(hull)), Vector2(40, y + 26.0), 22, UI.WHITE, true)
-	UI.text(c, "RUN SALVAGE %d" % int(run.salvage), Vector2(float(m.W) - 40.0, y + 26.0), 22, UI.MINT, true, UI.RIGHT)
+	UI.chip(c, Vector2(40, y + 22.0), "HULL %s" % ("FULL" if hull < 0 else str(hull)), 20, UI.CYAN)
+	UI.chip(c, Vector2(float(m.W) - 40.0, y + 22.0), "RUN SALVAGE %d" % int(run.salvage), 20, UI.MINT, UI.RIGHT)
 	for l in range(layers.size() - 1):
 		var row: Array = layers[l]
 		var next: Array = layers[l + 1]
@@ -140,26 +140,97 @@ func _paint_route(c: UILayer) -> void:
 				var from := float(i) / maxf(1.0, float(row.size() - 1))
 				var to := float(k) / maxf(1.0, float(next.size() - 1))
 				if absf(from - to) <= 0.55 or row.size() == 1 or next.size() == 1:
-					c.draw_line(_node_pos(l, i, row.size()), _node_pos(l + 1, k, next.size()), Color(1, 1, 1, 0.12), 2.0)
+					var a := _node_pos(l, i, row.size())
+					var b := _node_pos(l + 1, k, next.size())
+					if l == current - 1 and i == int(run.get("from", 0)) and (l + 1 == current):
+						# The path already walked.
+						c.draw_line(a, b, Color(UI.CYAN, 0.16), 9.0, true)
+						c.draw_line(a, b, Color(UI.CYAN, 0.75), 3.0, true)
+					elif l == current:
+						c.draw_line(a, b, Color(1, 1, 1, 0.26), 2.5, true)
+					else:
+						c.draw_dashed_line(a, b, Color(1, 1, 1, 0.12), 2.0, 9.0)
 	for l in range(layers.size()):
 		var row: Array = layers[l]
 		for i in range(row.size()):
 			_paint_route_node(c, l, i, row, current)
-	c.button("abandon", Rect2(float(m.W) * 0.5 - 130.0, float(m.H) - float(m.bottom) - 56.0, 260, 56), "ABANDON RUN", UI.RED, {"size": 18})
+	c.button("abandon", Rect2(float(m.W) * 0.5 - 130.0, float(m.H) - float(m.bottom) - 56.0, 260, 56), "ABANDON RUN", UI.RED, {"size": 18, "warning": true})
+
+## Each kind of node has its own shape and symbol, so a route reads at a glance:
+## battle = circle with crossed blades, elite = diamond with a spike star, depot = square with a plus,
+## signal = triangle with a mark, boss = large octagon with a crown.
+func _node_shape(type: String, r: float) -> PackedVector2Array:
+	var pts := PackedVector2Array()
+	match type:
+		"elite":
+			pts = PackedVector2Array([Vector2(0, -r * 1.12), Vector2(r * 1.12, 0), Vector2(0, r * 1.12), Vector2(-r * 1.12, 0)])
+		"depot":
+			var k := r * 0.28
+			pts = PackedVector2Array([Vector2(-r + k, -r), Vector2(r - k, -r), Vector2(r, -r + k), Vector2(r, r - k), Vector2(r - k, r), Vector2(-r + k, r), Vector2(-r, r - k), Vector2(-r, -r + k)])
+		"signal":
+			pts = PackedVector2Array([Vector2(0, -r * 1.1), Vector2(r * 1.05, r * 0.82), Vector2(-r * 1.05, r * 0.82)])
+		"boss":
+			var rb := r * 1.14
+			var kb := rb * 0.38
+			pts = PackedVector2Array([Vector2(-rb + kb, -rb), Vector2(rb - kb, -rb), Vector2(rb, -rb + kb), Vector2(rb, rb - kb), Vector2(rb - kb, rb), Vector2(-rb + kb, rb), Vector2(-rb, rb - kb), Vector2(-rb, -rb + kb)])
+		_:
+			for i in range(24):
+				pts.append(Vector2.from_angle(TAU * float(i) / 24.0) * r)
+	return pts
+
+func _node_glyph(c: UILayer, type: String, r: float, col: Color) -> void:
+	var line := Color(col.lightened(0.35), 0.95)
+	match type:
+		"battle":
+			c.draw_line(Vector2(-r * 0.42, -r * 0.42), Vector2(r * 0.42, r * 0.42), line, 3.5, true)
+			c.draw_line(Vector2(r * 0.42, -r * 0.42), Vector2(-r * 0.42, r * 0.42), line, 3.5, true)
+		"elite":
+			var star := PackedVector2Array()
+			for i in range(8):
+				star.append(Vector2.from_angle(-PI * 0.5 + TAU * float(i) / 8.0) * (r * 0.5 if i % 2 == 0 else r * 0.2))
+			c.draw_colored_polygon(star, line)
+		"depot":
+			c.draw_rect(Rect2(-r * 0.12, -r * 0.46, r * 0.24, r * 0.92), line)
+			c.draw_rect(Rect2(-r * 0.46, -r * 0.12, r * 0.92, r * 0.24), line)
+		"signal":
+			c.draw_rect(Rect2(-3.0, -r * 0.34, 6.0, r * 0.5), line)
+			c.draw_circle(Vector2(0, r * 0.4), 4.0, line)
+		"boss":
+			c.draw_polyline(PackedVector2Array([Vector2(-r * 0.5, r * 0.3), Vector2(-r * 0.5, -r * 0.3), Vector2(-r * 0.22, 0.0), Vector2(0, -r * 0.46), Vector2(r * 0.22, 0.0), Vector2(r * 0.5, -r * 0.3), Vector2(r * 0.5, r * 0.3), Vector2(-r * 0.5, r * 0.3)]), line, 3.0, true)
 
 func _paint_route_node(c: UILayer, l: int, i: int, row: Array, current: int) -> void:
 	var node: Dictionary = row[i]
-	var info: Dictionary = Expedition.NODE_INFO[node.type]
+	var type := str(node.type)
+	var info: Dictionary = Expedition.NODE_INFO[type]
 	var pos := _node_pos(l, i, row.size())
-	var r := 52.0
+	var r := 42.0
 	var col: Color = info.color
 	var is_now := l == current and Expedition.reachable(i)
+	var dim := 1.0 if is_now else (0.62 if l > current else 0.3)
 	if is_now:
-		c.hit_area("node%d" % i, Rect2(pos - Vector2(r, r), Vector2(r, r) * 2.0))
-		UI.glow(c, pos, r * 1.9 * (1.0 + sin(float(m.t) * 4.0) * 0.1), Color(col, 0.5))
-	var dim := 1.0 if is_now else (0.55 if l > current else 0.3)
-	UI.panel(c, Rect2(pos - Vector2(r, r), Vector2(r, r) * 2.0), Color(col.darkened(0.7), 0.96 * dim), Color(col, dim), 18, 3)
-	UI.text(c, str(info.name), pos + Vector2(0, 7), 17, Color(UI.WHITE, dim), true, UI.CENTER)
+		c.hit_area("node%d" % i, Rect2(pos - Vector2(r, r) * 1.2, Vector2(r, r) * 2.4))
+		UI.glow(c, pos, r * 2.0 * (0.94 + 0.1 * UI.breathe(2.4)), Color(col, 0.5))
+	c.draw_set_transform(pos, 0.0, Vector2.ONE)
+	var shape := _node_shape(type, r)
+	var top_c := Color(col.darkened(0.4), 0.96 * dim)
+	var bottom_c := Color(col.darkened(0.78), 0.96 * dim)
+	var fills := PackedColorArray()
+	var span := r * 2.4
+	for p in shape:
+		fills.append(top_c.lerp(bottom_c, clampf((p.y + span * 0.5) / span, 0.0, 1.0)))
+	c.draw_polygon(shape, fills)
+	var rim := shape.duplicate()
+	rim.append(shape[0])
+	c.draw_polyline(rim, Color(col, dim), 2.5 if is_now else 1.8, true)
+	if type == "boss":
+		var outer := PackedVector2Array()
+		for p in shape:
+			outer.append(p * 1.14)
+		outer.append(outer[0])
+		c.draw_polyline(outer, Color(col, 0.5 * dim), 1.5, true)
+	_node_glyph(c, type, r, Color(col, dim))
+	UI.text(c, str(info.name), Vector2(0, r * 1.12 + 26.0), 16, Color(UI.WHITE, dim), true, UI.CENTER)
+	c.draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
 
 func _paint_danger(c: UILayer) -> void:
 	var node_type := str((Save.expedition.get("current", {}) as Dictionary).get("type", "elite"))
@@ -196,12 +267,15 @@ func _paint_signal(c: UILayer) -> void:
 	var y: float = m.header(c, "SIGNAL", UI.GOLD)
 	var w: float = minf(float(m.W) - 60.0, 640.0)
 	var x: float = (float(m.W) - w) * 0.5
+	# The event itself sits on a gold-edged glass card, so it reads as something found out there.
+	var story := UI.wrap_lines(str(signal_event.text), 23, w - 40.0)
+	UI.glass(c, Rect2(x, y + 6.0, w, 64.0 + float(story.size()) * 34.0 + 10.0), UI.Kind.REWARD, UI.GOLD, {"chamfer": 16})
 	UI.text(c, str(signal_event.title), Vector2(float(m.W) * 0.5, y + 44.0), 30, UI.GOLD, true, UI.CENTER)
 	y += 70.0
-	for l in UI.wrap_lines(str(signal_event.text), 23, w):
+	for l in story:
 		UI.text(c, l, Vector2(float(m.W) * 0.5, y + 28.0), 23, UI.WHITE, false, UI.CENTER)
 		y += 34.0
-	y += 34.0
+	y += 44.0
 	if message.is_empty():
 		for side in ["a", "b"]:
 			var lines := UI.wrap_lines(str(signal_event[side].label), 21, w - 40.0)
