@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 2,
+  "title": "Starfall Salvage",
+  "description": "Pilot a small ship through falling asteroid waves, build a run-changing upgrade loadout, and break each sector boss in this portrait mobile arcade shooter.",
+  "defaultCaptions": {
+    "x": "Starfall Salvage: dodge the fall, build the ship, break the sector.",
+    "facebook": "Starfall Salvage is a portrait mobile space shooter with falling asteroid waves, upgrade cards, and sector bosses.",
+    "reddit": "I built Starfall Salvage, a one-thumb space survival game where every wave changes the ship build.",
+    "discord": "Starfall Salvage is live: auto-fire, salvage pickups, upgrade cards, elite hazards, and boss sectors."
+  },
+  "assets": {
+    "og": "assets/share/og.png",
+    "favicon": "assets/share/favicon.png"
+  }
+}

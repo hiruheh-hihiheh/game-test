@@ -1,0 +1,356 @@
+# STARFALL // SALVAGE — Full Asset Integration, Animations, Interactions & Sound Design
+
+I have provided a ZIP containing 25 individual transparent PNG assets, along with the redesigned game UI reference.
+
+Now I want you to properly integrate these assets into the actual game and make the entire experience feel like a professionally developed mobile arcade shooter.
+
+**IMPORTANT: Do not simply place the PNGs on the screen. Every asset must be integrated into the actual gameplay or UI, with appropriate animations, interactions, sound effects and state changes.**
+
+First inspect the existing project, understand its game loop and rendering system, and then implement everything without breaking existing gameplay mechanics.
+
+# 1. Asset Integration
+
+Extract the provided ZIP and organize all assets properly.
+
+Suggested structure:
+
+- assets/ships/
+- assets/ui-icons/
+- assets/projectiles/
+- assets/effects/
+- assets/environment/
+- assets/audio/
+- assets/fonts/
+
+Use the supplied assets wherever appropriate.
+
+Requirements:
+- Preserve PNG transparency.
+- Maintain original aspect ratios.
+- Use high-quality scaling.
+- Avoid stretching or distorting sprites.
+- Use the actual assets instead of emoji, placeholders or CSS approximations.
+- Do not display the entire asset sheet as one image.
+- Load assets efficiently and avoid repeatedly loading the same image.
+
+# 2. Icon Animations and Interactions
+
+Every interactive icon must have proper visual feedback.
+
+Do not leave icons completely static.
+
+Implement the following interaction states:
+
+**Idle**
+- Subtle glow or ambient animation where appropriate.
+- Small breathing or pulse animation for important indicators.
+- Avoid excessive continuous movement.
+
+**Touch / Click**
+- Slight scale-down effect.
+- Quick visual glow or flash.
+- Smooth return to original size.
+- Appropriate click sound.
+
+**Selected**
+- Show a persistent selected state.
+- Highlight the icon using its designated accent color.
+- Add a subtle animated border or glow.
+
+**Disabled**
+- Reduce brightness and saturation.
+- Clearly indicate that the action is unavailable.
+
+**Important:** Do not animate every icon constantly. Differentiate interactive controls from decorative HUD icons and gameplay sprites.
+
+# 3. Main Menu Animations
+
+Make the main menu feel alive.
+
+Implement:
+
+- Slowly rotating holographic rings around the spaceship.
+- Animated spaceship engine flames.
+- Small floating space particles.
+- Slowly moving background stars.
+- Subtle pulsing cyan UI elements.
+- Animated title entrance when opening the menu.
+- Smooth transitions when navigating between screens.
+
+START RUN button:
+- Subtle cyan glow while idle.
+- Animated border highlight.
+- Press-down animation when tapped.
+- Short confirmation sound.
+- Smooth transition into gameplay.
+
+The three information cards should also have subtle touch feedback.
+
+# 4. Spaceship Animations
+
+The player spaceship is one of the most important visual elements.
+
+Implement:
+
+- Animated engine flames.
+- Small engine glow.
+- Smooth movement when the player drags their finger.
+- Slight movement feedback when changing directions.
+- Weapon firing animation.
+- Muzzle flashes when shooting.
+- Small recoil or firing effects where appropriate.
+- Shield activation visual effect.
+- Damage flash when taking damage.
+- Explosion animation when destroyed.
+
+The ship must not look like a static PNG moving around the screen.
+
+Use the supplied spaceship sprites and create additional effects through animation and particles where necessary.
+
+# 5. Gameplay Effects and Animations
+
+Properly integrate the projectiles, asteroids, crystals and explosion assets.
+
+**Player projectiles**
+- Travel in the correct direction.
+- Have a glowing trail.
+- Disappear when hitting a target or leaving the play area.
+- Play a subtle firing sound.
+
+**Enemy projectiles**
+- Use a visually distinct color.
+- Have animated movement.
+- Be distinguishable from player attacks.
+
+**Asteroids**
+- Rotate slowly.
+- Move with varied velocities.
+- Have different sizes and movement patterns.
+- Show an appropriate impact effect when hit.
+- Break apart or explode when destroyed, depending on the existing game design.
+
+**Explosions**
+- Use animated sprite effects or particle sequences.
+- Include a quick flash.
+- Include particles that spread outward.
+- Fade out naturally.
+- Play a corresponding explosion sound.
+
+**Salvage crystals**
+- Subtle floating animation.
+- Slow rotation.
+- Glowing cyan effect.
+- Collection animation when picked up.
+- Play a collection sound.
+- Update the actual salvage count.
+
+Avoid letting particle effects accumulate indefinitely. Clean up expired effects.
+
+# 6. Module Bay — Animated Upgrade Cards
+
+The Module Bay must feel interactive and rewarding.
+
+Each upgrade card should have its own personality.
+
+**HULL PLATING**
+- Use the shield icon.
+- Cyan/blue glow.
+- Shield icon has a subtle protective pulse.
+- On selection, show a shield expansion animation.
+
+**AFTERBURNER**
+- Use the magenta acceleration icon.
+- Subtle horizontal energy movement.
+- On selection, show an engine boost effect.
+
+**TRI-BEAM**
+- Use the three-projectile weapon icon.
+- Subtle energy pulse.
+- On selection, show a three-beam firing animation.
+
+When the user taps an upgrade:
+
+1. Animate the selected card.
+2. Highlight its border.
+3. Play a selection sound.
+4. Show a short installation effect.
+5. Apply the actual upgrade to the player.
+6. Update the appropriate gameplay statistics.
+7. Close the upgrade selection and resume gameplay.
+
+Make sure the other two cards cannot also be selected during the installation process.
+
+Do not implement upgrades that only change their appearance. They must modify actual gameplay behavior.
+
+# 7. Sound Design — Very Important
+
+I want proper sound effects throughout the game.
+
+Do not use the same sound for every action.
+
+Implement separate sound effects for:
+
+| Action | Sound |
+|---|---|
+| Button click | Short futuristic UI click |
+| Start run | Arcade launch sound |
+| Player shooting | Sci-fi laser firing |
+| Enemy shooting | Distinct enemy projectile sound |
+| Asteroid destroyed | Impact/explosion |
+| Crystal collected | Digital collection chime |
+| Upgrade selected | Confirmation tone |
+| Upgrade installed | Energy activation sound |
+| Shield activated | Electronic shield effect |
+| Player damaged | Damage warning |
+| Boss entrance | Deep cinematic warning |
+| Boss defeated | Powerful victory effect |
+| Pause | Soft interface sound |
+| Resume | Short activation sound |
+| Game over | Arcade defeat sound |
+
+Use suitable royalty-free or original sound assets. Do not use copyrighted music or sounds without permission.
+
+**Background audio:**
+- Add an atmospheric sci-fi background music track.
+- Keep it quieter than important gameplay sound effects.
+- Make the music loop smoothly.
+- Allow the user to mute or adjust music and sound effects separately.
+
+**Audio settings:**
+Add proper sound controls in the settings screen:
+- Music ON/OFF.
+- Sound Effects ON/OFF.
+- Music Volume.
+- SFX Volume.
+
+Remember:
+- Respect mobile audio restrictions and initialize audio after user interaction where required.
+- Preload frequently used sound effects.
+- Avoid overlapping excessive sounds.
+- Prevent audio from continuing after the game is closed or restarted.
+- Stop or pause appropriate audio when the game is paused.
+- Resume audio correctly when gameplay resumes.
+- Avoid playing sounds repeatedly because of state re-renders.
+
+# 8. Pause Screen
+
+When the player presses pause:
+
+- Freeze player movement.
+- Stop enemy movement.
+- Stop projectile movement.
+- Stop collision processing.
+- Pause gameplay timers.
+- Pause appropriate sound and music playback.
+- Display the pause overlay with a smooth fade/scale entrance.
+
+RESUME RUN:
+- Play a confirmation sound.
+- Animate the button.
+- Restore the game from the exact previous state.
+
+MAIN MENU:
+- Safely end the current run.
+- Navigate to the main menu.
+- Clean up temporary gameplay effects.
+- Do not leave background game loops running.
+
+# 9. Transitions and Overall Animation Quality
+
+Add smooth transitions between:
+
+- Main Menu → Gameplay.
+- Gameplay → Module Bay.
+- Module Bay → Gameplay.
+- Gameplay → Pause.
+- Pause → Gameplay.
+- Pause → Main Menu.
+- Gameplay → Game Over.
+
+Use small combinations of:
+- Fade transitions.
+- Scale transitions.
+- Slide transitions.
+- Glow effects.
+- Particle effects.
+
+Keep transitions short so they do not interrupt gameplay.
+
+# 10. Mobile Performance
+
+This is primarily a mobile game, so performance is important.
+
+Requirements:
+- Maintain smooth gameplay on mid-range Android devices.
+- Optimize sprite rendering.
+- Avoid unnecessary re-renders.
+- Avoid creating excessive objects every frame.
+- Reuse or pool projectiles and particle objects where appropriate.
+- Clean up audio instances and animation resources.
+- Keep touch input responsive.
+- Support different screen resolutions and aspect ratios.
+- Handle device safe areas.
+- Do not block the main game loop with expensive animation operations.
+
+Use the animation and rendering system already present in the project wherever possible.
+
+# 11. Functional Requirements
+
+All interactions must be connected to real game state.
+
+Verify that:
+
+- START RUN actually starts a new run.
+- Pause actually pauses the game.
+- Resume restores the existing run.
+- Upgrade cards modify actual player abilities.
+- Weapon upgrades change projectile behavior.
+- Hull and shield upgrades affect actual statistics.
+- Collection effects update the salvage count.
+- Shooting sounds play when the player fires.
+- Collision effects occur when objects collide.
+- Destruction animations occur when enemies are destroyed.
+- Sound settings actually control audio playback.
+- Game over correctly stops the current run.
+
+No fake interactions or decorative buttons that do nothing.
+
+# 12. Final Testing
+
+After implementation, test the complete gameplay flow:
+
+1. Open the game.
+2. Navigate through the main menu.
+3. Start a run.
+4. Move the spaceship using touch.
+5. Confirm automatic firing works.
+6. Destroy asteroids and collect salvage.
+7. Verify projectile and explosion animations.
+8. Complete a wave.
+9. Select and install an upgrade.
+10. Verify the upgrade changes gameplay.
+11. Pause and resume the game.
+12. Test music and sound settings.
+13. Continue through multiple waves.
+14. Verify game-over and return-to-menu behavior.
+
+Test both mobile touch interaction and desktop mouse interaction.
+
+# Final Instruction
+
+I want the end result to feel like a complete, polished sci-fi arcade game.
+
+The supplied PNG assets must be properly integrated into the real game, with animated sprites, meaningful interactions, sound effects, and smooth transitions.
+
+Do not just produce a visual redesign. Do not stop at static UI implementation.
+
+Inspect the existing codebase, implement the complete experience, test it, and report:
+
+- Files created or modified.
+- Assets integrated.
+- Animations implemented.
+- Sound effects implemented.
+- Gameplay interactions completed.
+- Any remaining limitations.
+
+Prioritize gameplay quality, responsiveness, visual polish and performance.

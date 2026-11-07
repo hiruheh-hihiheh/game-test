@@ -1,0 +1,9 @@
+# Saves
+
+- Files: `starfall_save.cfg` with a backup `starfall_save.cfg.bak`, written through a temp file so a crash cannot leave half a save.
+- `Save.load_data()` starts from a clean slate, tries the main file, then the backup, and returns where the data came from: `"main"`, `"backup"` or `"none"` (fresh start). A file that parses but holds no progress is skipped in favour of the backup.
+- Version 1 files (before the current format) go through `_migrate_v1`. Stars become star masks, the bosses already beaten keep their blueprints, and old settings map to the new ones.
+- Every load, including a fresh start and each fallback, first resets progress (`reset_progress`), settings (`reset_settings`, a deep copy of `DEFAULT_OPT` made in place) and the map position (`reset_view`, session only). Then only the settings the file actually holds are merged in, so nothing leaks from a save loaded earlier.
+- `Save.reset_progress()` returns every progress value to a new player's. Settings are untouched. The Settings reset button uses it, so new fields cannot be forgotten.
+- Under `-- --test` the game uses `user://starfall_test_save_<pid>.cfg`, named after the process, so two test runs at once never delete each other's files. Files left by crashed runs are cleaned up at the next start.
+- The save tests (`_test_save_loading` in `tools/test_game.gd`) cover a fresh install, a legacy v1 save loaded over leftover state, a v1 save with only a backup, a current save round trip, and backup fallback from a corrupt, empty or missing main file.

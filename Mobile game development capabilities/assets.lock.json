@@ -1,0 +1,192 @@
+{
+  "version": 2,
+  "groups": {
+    "starfall": {
+      "name": "Starfall",
+      "order": 20
+    },
+    "template": {
+      "name": "Template",
+      "order": 0
+    }
+  },
+  "bundles": {},
+  "assets": {
+    "assets/starfall/asteroid_elite.png": {
+      "path": "/manus-storage/game/sha256/323d6c7a0c597db28ea2f40e70c9546fec8a54bbc0ce073079fe7162640d0e39.png",
+      "sha256": "sha256:323d6c7a0c597db28ea2f40e70c9546fec8a54bbc0ce073079fe7162640d0e39",
+      "size": 4270120,
+      "assetType": "image",
+      "groupId": "starfall",
+      "used": true
+    },
+    "assets/starfall/orbit_drone.png": {
+      "path": "/manus-storage/game/sha256/deeb4885e2d40cfd13f7f0d4b0cdc96b0f2b23f484cb1d682ec61684d3f90629.png",
+      "sha256": "sha256:deeb4885e2d40cfd13f7f0d4b0cdc96b0f2b23f484cb1d682ec61684d3f90629",
+      "size": 2123907,
+      "assetType": "image",
+      "groupId": "starfall",
+      "used": true
+    },
+    "assets/starfall/player_ship.png": {
+      "path": "/manus-storage/game/sha256/557c5e8e9ed1eb9bfbfeedf659df5a8ab29cb3f12184e53c101a572c857becab.png",
+      "sha256": "sha256:557c5e8e9ed1eb9bfbfeedf659df5a8ab29cb3f12184e53c101a572c857becab",
+      "size": 2740299,
+      "assetType": "image",
+      "groupId": "starfall",
+      "used": true
+    },
+    "assets/starfall/salvage_pickup.png": {
+      "path": "/manus-storage/game/sha256/1dbf828ceadec8f841250d1c9f3fc3b797209f343f4b7829430051bca8bf42ee.png",
+      "sha256": "sha256:1dbf828ceadec8f841250d1c9f3fc3b797209f343f4b7829430051bca8bf42ee",
+      "size": 2799557,
+      "assetType": "image",
+      "groupId": "starfall",
+      "used": true
+    },
+    "assets/starfall/sector_boss.png": {
+      "path": "/manus-storage/game/sha256/d49cb334d2a99ebfbe5cb256bacbcfd32a137cf629a65207d5c8b8ab89fd5dcc.png",
+      "sha256": "sha256:d49cb334d2a99ebfbe5cb256bacbcfd32a137cf629a65207d5c8b8ab89fd5dcc",
+      "size": 5699258,
+      "assetType": "image",
+      "groupId": "starfall",
+      "used": true
+    },
+    "assets/template/ai_drone.webp": {
+      "path": "https://d1oupeiobkpcny.cloudfront.net/assets/dashboard/materials/2026/09/04/game-template/game-bullet-hell/1.0.1/9670e95c1344c4eea1d82f943ea2ac30805d07158efe06d655bf0d17ec56e3fb/assets/template/ai_drone.webp",
+      "sha256": "sha256:9670e95c1344c4eea1d82f943ea2ac30805d07158efe06d655bf0d17ec56e3fb",
+      "size": 16626,
+      "assetType": "image",
+      "groupId": "template",
+      "used": false
+    },
+    "assets/template/ai_mothership.webp": {
+      "path": "https://d1oupeiobkpcny.cloudfront.net/assets/dashboard/materials/2026/09/04/game-template/game-bullet-hell/1.0.1/670f31e7f3b931a833e15a94a62868b4ceb5b64389e204add69352f56546321f/assets/template/ai_mothership.webp",
+      "sha256": "sha256:670f31e7f3b931a833e15a94a62868b4ceb5b64389e204add69352f56546321f",
+      "size": 80710,
+      "assetType": "image",
+      "groupId": "template",
+      "used": false
+    },
+    "assets/template/audio/explosion.ogg": {
+      "path": "https://d1oupeiobkpcny.cloudfront.net/assets/dashboard/materials/2026/09/04/game-template/game-bullet-hell/1.0.1/ab256dfd22b760c1ccc9f58ecdb06749a2a5b19a42d8f1733539e5850a200975/assets/template/audio/explosion.ogg",
+      "sha256": "sha256:ab256dfd22b760c1ccc9f58ecdb06749a2a5b19a42d8f1733539e5850a200975",
+      "size": 9612,
+      "assetType": "audio",
+      "groupId": "template",
+      "used": true
+    },
+    "assets/template/audio/hit.ogg": {
+      "path": "https://d1oupeiobkpcny.cloudfront.net/assets/dashboard/materials/2026/09/04/game-template/game-bullet-hell/1.0.1/50650c1555ddf26705b9133eda2829a316d4298bcdc39aa3fd282d4aa3468712/assets/template/audio/hit.ogg",
+      "sha256": "sha256:50650c1555ddf26705b9133eda2829a316d4298bcdc39aa3fd282d4aa3468712",
+      "size": 5643,
+      "assetType": "audio",
+      "groupId": "template",
+      "used": true
+    },
+    "assets/template/audio/shoot.ogg": {
+      "path": "https://d1oupeiobkpcny.cloudfront.net/assets/dashboard/materials/2026/09/04/game-template/game-bullet-hell/1.0.1/e3885aefde5f03636e557a0b724d75eb5ae0d63351cac7a1f95426a33ef7940c/assets/template/audio/shoot.ogg",
+      "sha256": "sha256:e3885aefde5f03636e557a0b724d75eb5ae0d63351cac7a1f95426a33ef7940c",
+      "size": 4366,
+      "assetType": "audio",
+      "groupId": "template",
+      "used": true
+    },
+    "assets/template/audio/stargrave_battle.ogg": {
+      "path": "https://d1oupeiobkpcny.cloudfront.net/assets/dashboard/materials/2026/09/04/game-template/game-bullet-hell/1.0.1/5b47f61f2606e87ff310168df75ad466ab2f12fc27521b54a2ab980c4e6dfd07/assets/template/audio/stargrave_battle.ogg",
+      "sha256": "sha256:5b47f61f2606e87ff310168df75ad466ab2f12fc27521b54a2ab980c4e6dfd07",
+      "size": 955207,
+      "assetType": "audio",
+      "groupId": "template",
+      "used": true
+    },
+    "assets/template/dog_ship.webp": {
+      "path": "https://d1oupeiobkpcny.cloudfront.net/assets/dashboard/materials/2026/09/04/game-template/game-bullet-hell/1.0.1/566fb270ab3f8681b18de157ec9a0ca7e7d066c3451d12bb2678de96b0577b27/assets/template/dog_ship.webp",
+      "sha256": "sha256:566fb270ab3f8681b18de157ec9a0ca7e7d066c3451d12bb2678de96b0577b27",
+      "size": 30286,
+      "assetType": "image",
+      "groupId": "template",
+      "used": false
+    },
+    "assets/template/elite_boss_barrage.webp": {
+      "path": "https://d1oupeiobkpcny.cloudfront.net/assets/dashboard/materials/2026/09/04/game-template/game-bullet-hell/1.0.1/7e1e4a6e27f8b4a18932857e806c12ffb7127869b844bb72fcdc4114ad177e86/assets/template/elite_boss_barrage.webp",
+      "sha256": "sha256:7e1e4a6e27f8b4a18932857e806c12ffb7127869b844bb72fcdc4114ad177e86",
+      "size": 67744,
+      "assetType": "image",
+      "groupId": "template",
+      "used": false
+    },
+    "assets/template/elite_boss_geometry.webp": {
+      "path": "https://d1oupeiobkpcny.cloudfront.net/assets/dashboard/materials/2026/09/04/game-template/game-bullet-hell/1.0.1/d306d7625d86b99805218c307d2d5df409ddd8bb1293075799b1832f290724f6/assets/template/elite_boss_geometry.webp",
+      "sha256": "sha256:d306d7625d86b99805218c307d2d5df409ddd8bb1293075799b1832f290724f6",
+      "size": 74986,
+      "assetType": "image",
+      "groupId": "template",
+      "used": false
+    },
+    "assets/template/elite_boss_laser.webp": {
+      "path": "https://d1oupeiobkpcny.cloudfront.net/assets/dashboard/materials/2026/09/04/game-template/game-bullet-hell/1.0.1/dcb226f78cacbe20eb9d8f5159d65ef3eedfc1597a7a84fdd2f273602e335174/assets/template/elite_boss_laser.webp",
+      "sha256": "sha256:dcb226f78cacbe20eb9d8f5159d65ef3eedfc1597a7a84fdd2f273602e335174",
+      "size": 51650,
+      "assetType": "image",
+      "groupId": "template",
+      "used": false
+    },
+    "assets/template/fonts/Exo2-VF.subset.woff2": {
+      "path": "https://d1oupeiobkpcny.cloudfront.net/assets/dashboard/materials/2026/09/25/game-template/game-bullet-hell/2026.09.25-typography-v1/7dd9d9a08bca3097f107c089b8b1f12ed1e99330a04243220f8d187da9f491ed/assets/template/fonts/Exo2-VF.subset.woff2",
+      "sha256": "sha256:7dd9d9a08bca3097f107c089b8b1f12ed1e99330a04243220f8d187da9f491ed",
+      "size": 55012,
+      "assetType": "font",
+      "groupId": "template",
+      "used": true
+    },
+    "assets/template/fonts/ManusCC0-Bold.woff2": {
+      "path": "https://d1oupeiobkpcny.cloudfront.net/assets/dashboard/materials/2026/09/30/48c1f3452238f29eb1fe4b8bddfe8fd4045045a5c26657307b8862993488148e.bin",
+      "sha256": "sha256:48c1f3452238f29eb1fe4b8bddfe8fd4045045a5c26657307b8862993488148e",
+      "size": 10308,
+      "assetType": "font",
+      "groupId": "template",
+      "used": true
+    },
+    "assets/template/fonts/ManusCC0SansCJKSC-Bold.woff2": {
+      "path": "https://d1oupeiobkpcny.cloudfront.net/assets/dashboard/materials/2026/09/30/1f36038ab04123370c72fda640a309e374b58cc3121c493f129e38a53a4225f0.bin",
+      "sha256": "sha256:1f36038ab04123370c72fda640a309e374b58cc3121c493f129e38a53a4225f0",
+      "size": 951448,
+      "assetType": "font",
+      "groupId": "template",
+      "used": true
+    },
+    "assets/template/fonts/NotoSansSC-VF.subset.woff2": {
+      "path": "https://d1oupeiobkpcny.cloudfront.net/assets/dashboard/materials/2026/09/25/game-template/game-generic/2026.09.25-typography-v1/38f4c5f927f746b3dfa4c3a5d7edf0b7a3e828e27438418fa54f9e1565289412/assets/template/fonts/NotoSansSC-VF.subset.woff2",
+      "sha256": "sha256:38f4c5f927f746b3dfa4c3a5d7edf0b7a3e828e27438418fa54f9e1565289412",
+      "size": 1869368,
+      "assetType": "font",
+      "groupId": "template",
+      "used": true
+    },
+    "assets/template/star_graveyard.webp": {
+      "path": "https://d1oupeiobkpcny.cloudfront.net/assets/dashboard/materials/2026/09/04/game-template/game-bullet-hell/1.0.1/f448356c85ab9fb59fb2edb8a939a28563e0a2c1e255372d8c474c85dccf03fa/assets/template/star_graveyard.webp",
+      "sha256": "sha256:f448356c85ab9fb59fb2edb8a939a28563e0a2c1e255372d8c474c85dccf03fa",
+      "size": 52268,
+      "assetType": "image",
+      "groupId": "template",
+      "used": true
+    },
+    "assets/template/star_graveyard_mid.webp": {
+      "path": "https://d1oupeiobkpcny.cloudfront.net/assets/dashboard/materials/2026/09/04/game-template/game-bullet-hell/1.0.1/7ba46b9df1c9a1042f3fb3bea3691d24c0098dbb167fb1e690904fb8bb0b0c70/assets/template/star_graveyard_mid.webp",
+      "sha256": "sha256:7ba46b9df1c9a1042f3fb3bea3691d24c0098dbb167fb1e690904fb8bb0b0c70",
+      "size": 211018,
+      "assetType": "image",
+      "groupId": "template",
+      "used": true
+    },
+    "assets/template/star_graveyard_near.webp": {
+      "path": "https://d1oupeiobkpcny.cloudfront.net/assets/dashboard/materials/2026/09/04/game-template/game-bullet-hell/1.0.1/681d2776cd436ad57a1876d3d864b28d816e8ef0bb34caadd18610734ea5dabc/assets/template/star_graveyard_near.webp",
+      "sha256": "sha256:681d2776cd436ad57a1876d3d864b28d816e8ef0bb34caadd18610734ea5dabc",
+      "size": 156040,
+      "assetType": "image",
+      "groupId": "template",
+      "used": true
+    }
+  }
+}
