@@ -72,26 +72,70 @@ func muzzle() -> Vector2:
 func on_stage() -> void:
 	g.hazards.add_well(Vector2(float(g.W) * 0.5, float(g.H) * 0.62), 0.5 + float(stage) * 0.2, 16.0)
 
-func special(name_: String) -> bool:
+func prepare_special(name_: String):
 	match name_:
 		"wells":
+			var spots: Array = []
 			for i in range(1 + stage):
-				g.hazards.add_well(Vector2(randf_range(120.0, float(g.W) - 120.0), randf_range(float(g.H) * 0.5, float(g.H) * 0.66)), 0.8, 9.0)
+				spots.append(Vector2(randf_range(120.0, float(g.W) - 120.0), randf_range(float(g.H) * 0.5, float(g.H) * 0.66)))
+			return {"spots": spots}
+		"spokes":
+			return {"angle": randf() * TAU, "dir": 1.0 if randf() < 0.5 else -1.0}
+		"collapse":
+			return {}
+	return null
+
+func describe_special(p: Dictionary, _k: float, d: Dictionary) -> bool:
+	match str(p.name):
+		"wells":
+			var spots: Array = []
+			for s in p.spots:
+				spots.append({"pos": s, "r": 90.0, "shape": "well"})
+			d.style = "spots"
+			d.hue = "arc"
+			d.spots = spots
 			return true
 		"spokes":
-			g.hazards.add_spokes(pos, 2 + stage, 0.38 + float(stage) * 0.08, 7.0)
+			d.style = "hub"
+			d.hue = "arc"
+			d.origin = pos
+			d.arms = 2 + stage
+			d.a0 = float(p.angle)
+			d.dir = float(p.dir)
+			return true
+		"collapse":
+			d.style = "radial"
+			d.hue = "danger"
+			d.origin = pos
+			d.rays = Telegraph.radial_rays(pos, 28)
+			d.rl = 300.0
+			d.centre = pos
+			return true
+	return false
+
+func special(name_: String) -> bool:
+	var p := plan_for(name_)
+	match name_:
+		"wells":
+			for spot in p.spots:
+				g.hazards.add_well(spot, 0.8, 9.0)
+			return true
+		"spokes":
+			g.hazards.add_spokes(pos, 2 + stage, 0.38 + float(stage) * 0.08, 7.0, float(p.angle), float(p.dir))
 			return true
 		"collapse":
 			# Every shot on screen falls toward the eye for a moment, then the eye fires back.
 			g.hazards.add_well(pos, 2.2, 2.2)
-			g.after(2.0, _rebound)
+			g.after(Telegraph.COLLAPSE_DELAY, _rebound)
+			g.tg.add("collapse", 0.0, Telegraph.COLLAPSE_DELAY + 0.3, {"list": [0]})
 			return true
 	return false
 
 func _rebound() -> void:
+	g.tg.fired("collapse", 0)
 	if dying > 0.0 or dead:
 		return
-	for i in range(28):
-		g.ebullet(pos, float(i) * TAU / 28.0, speed(250.0), BulletField.ORB, 20.0)
+	for r in Telegraph.radial_rays(pos, 28):
+		g.ebullet(r.at, r.ang, speed(250.0), BulletField.ORB, 20.0)
 	Audio.play("burst", -3.0, 1.3)
 	g.kick(8.0)

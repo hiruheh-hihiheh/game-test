@@ -39,19 +39,53 @@ func on_stage() -> void:
 	if stage == 2:
 		g.hazards.add_well(pos + Vector2(0, 40), 0.5, 40.0)
 
+## Where each thrown boulder starts and which way it goes (the same numbers the throw uses).
+func throw_rays() -> Array:
+	var out: Array = []
+	var base: float = ((g.player_pos as Vector2) - pos).angle()
+	for i in range(1 + stage):
+		var aim := base + (float(i) - float(stage) * 0.5) * 0.34
+		out.append({"at": pos + Vector2.from_angle(aim) * 130.0, "ang": aim})
+	return out
+
+## Whatever remains of the ring is flung at the player, each piece from where it is.
+func hurl_rays() -> Array:
+	var out: Array = []
+	for p in ring:
+		if p.alive:
+			out.append({"at": p.at, "ang": ((g.player_pos as Vector2) - (p.at as Vector2)).angle()})
+	return out
+
+func prepare_special(name_: String):
+	if name_ in ["throw", "hurl"]:
+		return {}
+	return null
+
+func describe_special(p: Dictionary, _k: float, d: Dictionary) -> bool:
+	match str(p.name):
+		"throw":
+			d.style = "aimed"
+			d.rays = throw_rays()
+			d.len = clampf(pos.distance_to(g.player_pos) + 100.0, 260.0, 1500.0)
+			d.origin = pos
+			d.heavy = true
+			return true
+		"hurl":
+			d.style = "volley"
+			d.rays = hurl_rays()
+			d.len = 520.0
+			return true
+	return false
+
 func special(name_: String) -> bool:
 	match name_:
 		"throw":
 			Audio.play("rock", 0.0, 0.7)
-			for i in range(1 + stage):
-				var aim: float = ((g.player_pos as Vector2) - pos).angle() + (float(i) - float(stage) * 0.5) * 0.34
-				g.spawn_enemy({"kind": "rock_m", "pos": pos + Vector2.from_angle(aim) * 130.0, "move": "straight", "vel": Vector2.from_angle(aim) * 280.0 * float(g.scale_cfg.speed)})
+			for r in throw_rays():
+				g.spawn_enemy({"kind": "rock_m", "pos": r.at, "move": "straight", "vel": Vector2.from_angle(float(r.ang)) * 280.0 * float(g.scale_cfg.speed)})
 			return true
 		"hurl":
-			# Whatever remains of the ring is flung at the player.
-			for p in ring:
-				if p.alive:
-					var aim: float = ((g.player_pos as Vector2) - (p.at as Vector2)).angle()
-					g.ebullet(p.at, aim, speed(250.0), BulletField.HEAVY, 30.0)
+			for r in hurl_rays():
+				g.ebullet(r.at, r.ang, speed(250.0), BulletField.HEAVY, 30.0)
 			return true
 	return false

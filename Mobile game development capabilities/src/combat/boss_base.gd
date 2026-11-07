@@ -4,6 +4,12 @@ extends RefCounted
 ## Each boss script only describes what makes it different.
 
 const STAGE_AT := [0.67, 0.34]
+## Seconds between a boss picking an attack and firing it. The warning rides on this clock.
+const CHARGE := 0.55
+## The attacks that get a second, lower warning tone on top of the charge sound.
+const DANGEROUS := ["strike", "ring", "ram", "meltdown", "collapse"]
+const STREAM_STEP := 0.41
+const STREAM_GAP := 0.11
 
 var g
 var def: Dictionary = {}
@@ -20,6 +26,10 @@ var dying := 0.0
 var boom_t := 0.0
 var charge := 0.0
 var pending := ""
+## What the charge in progress will do, prepared when it began. `attack()` fires exactly this, so the warning and the
+## attack cannot disagree. `plan` is the same dictionary while the attack runs.
+var intent: Dictionary = {}
+var plan: Dictionary = {}
 var stream_t := 0.0
 var stream_angle := 0.0
 var stream_gap := 0.0
@@ -105,9 +115,12 @@ func update(dt: float) -> void:
 			var list := rotation()
 			pending = list[order % list.size()]
 			order += 1
-			charge = 0.55
+			charge = CHARGE
 			attack_t = 2.9
+			intent = prepare(pending)
 			Audio.play("charge", -3.0)
+			if pending in DANGEROUS:
+				Audio.play("warning", -9.0, 1.5)
 		if charge > 0.0:
 			charge -= dt
 			if charge <= 0.0:
@@ -255,6 +268,9 @@ func _stage_up() -> void:
 	g.field.clear_circle(g.player_pos, 300.0)
 	attack_t = 1.4
 	on_stage()
+	if charge > 0.0:
+		# Counts depend on the stage, so a charge already running is re-prepared for the new one.
+		intent = prepare(pending)
 
 func _begin_death() -> void:
 	dying = 2.1
@@ -262,6 +278,9 @@ func _begin_death() -> void:
 	g.time_scale = 0.3
 	g.field.clear()
 	g.hazards.beams.clear()
+	intent = {}
+	charge = 0.0
+	g.tg.clear()
 	for e in g.enemies:
 		if not e.ally:
 			g._kill_enemy(e, true)
@@ -318,63 +337,89 @@ func speed(base: float) -> float:
 
 ## Attack library shared by every boss.
 func attack(name_: String) -> void:
+	plan = _take(name_)
 	if dying > 0.0 or special(name_):
 		return
 	var from := muzzle()
 	Audio.play("enemy_shoot", -2.0, 0.7)
 	match name_:
 		"fan":
-			var n := 9 + stage * 2
-			for i in range(n):
-				g.ebullet(from, PI * 0.5 + (float(i) - float(n - 1) * 0.5) * 0.17, speed(245.0), BulletField.DART)
+			for r in Telegraph.fan_rays(from, int(plan.n)):
+				g.ebullet(r.at, r.ang, speed(245.0), BulletField.DART)
 		"aimed":
 			_aimed(from)
 		"burst":
-			for i in range(4 + stage):
-				g.after(float(i) * 0.26, _aimed_now)
+			var n := int(plan.n)
+			var shots: Array = []
+			for i in range(n):
+				shots.append(i)
+				g.after(float(i) * Telegraph.BURST_GAP, _aimed_now.bind(i))
+			g.tg.add("burst", 0.0, float(n) * Telegraph.BURST_GAP, {"n": n, "list": shots})
 		"ring":
-			var count := 20 + stage * 4
-			var gap := randi() % count
-			for i in range(count):
-				if i == gap or i == (gap + 1) % count:
-					continue
-				g.ebullet(from, float(i) * TAU / float(count), speed(220.0), BulletField.ORB)
+			for r in Telegraph.ring_rays(from, int(plan.count), int(plan.gap)):
+				g.ebullet(r.at, r.ang, speed(220.0), BulletField.ORB)
 		"spiral":
 			stream_t = 1.9 + float(stage) * 0.4
-			stream_angle = randf() * TAU
-			stream_arms = 2 + stage
+			stream_angle = float(plan.angle)
+			stream_arms = int(plan.arms)
 		"curtain":
-			for row in range(3 + stage):
-				g.after(float(row) * 0.8, curtain_row)
+			run_curtain(BulletField.DART)
 		"strike":
-			for i in range(1 + stage):
-				var x: float = randf_range(60.0, g.W - 60.0) if i > 0 else float(g.player_pos.x)
+			var xs: Array = plan.xs
+			for i in range(xs.size()):
+				# The first column goes where the ship is when it fires, the rest were chosen at the start of the charge.
+				var x: float = float(g.player_pos.x) if i == 0 else float(xs[i])
 				g.hazards.add_beam("col", x, 0.95 + float(i) * 0.25, 0.55, UI.MAGENTA, 34.0)
 		"rocks":
-			g.spawn_group({"kind": "rocks", "form": "rain", "count": 4 + stage, "delay": 0.0})
+			_group({"kind": "rocks", "form": "rain", "count": 4 + stage, "delay": 0.0}, "rock")
 		"raiders":
-			g.spawn_group({"kind": "raider", "form": "dive", "count": 3 + stage, "delay": 0.0})
+			_group({"kind": "raider", "form": "dive", "count": 3 + stage, "delay": 0.0}, "raider")
 		"mines":
-			g.spawn_group({"kind": "mine", "form": "scatter", "count": 2 + stage, "delay": 0.0})
+			_group({"kind": "mine", "form": "scatter", "count": 2 + stage, "delay": 0.0}, "mine")
 
-func _aimed_now() -> void:
+## Starts a group using the entry positions chosen when the charge began, and keeps a marker for each one that has not arrived yet.
+func _group(cfg: Dictionary, shape: String) -> void:
+	cfg["xs"] = plan.get("xs", [])
+	cfg["ys"] = plan.get("ys", [])
+	g.spawn_group(cfg)
+	if not Telegraph.summons_arrive:
+		return
+	var gap: float = float(Telegraph.STAGGER.get(str(cfg.form), 0.0))
+	var members: Array = plan.markers
+	for i in range(members.size()):
+		if gap * float(i) > 0.0:
+			g.tg.add("marker", 0.0, gap * float(i), {"pos": (members[i] as Dictionary).pos, "shape": str((members[i] as Dictionary).get("shape", shape))})
+
+func _aimed_now(i := -1) -> void:
+	g.tg.fired("burst", i)
 	if dying <= 0.0 and not dead:
 		_aimed(muzzle())
 
 func _aimed(from: Vector2) -> void:
 	var aim: float = ((g.player_pos as Vector2) - from).angle()
-	for i in range(3):
-		g.ebullet(from, aim + (float(i) - 1.0) * 0.12, speed(305.0), BulletField.ORB)
+	for r in Telegraph.aimed_rays(from, aim):
+		g.ebullet(r.at, r.ang, speed(305.0), BulletField.ORB)
 
-func curtain_row(kind := BulletField.DART) -> void:
+## `gap` is the x of the opening; leave it out and one is chosen now.
+func curtain_row(kind := BulletField.DART, gap := -1.0) -> void:
 	if dying > 0.0 or dead:
 		return
-	var gap := randf_range(110.0, float(g.W) - 110.0)
-	var x := 30.0
-	while x < float(g.W):
-		if absf(x - gap) > 118.0:
-			g.ebullet(Vector2(x, pos.y + 30.0), PI * 0.5, speed(205.0), kind, 20.0)
-		x += 58.0
+	if gap < 0.0:
+		gap = randf_range(110.0, float(g.W) - 110.0)
+	g.tg.fired("curtain_row", gap)
+	for x in Telegraph.curtain_xs(gap, float(g.W)):
+		g.ebullet(Vector2(float(x), pos.y + 30.0), PI * 0.5, speed(205.0), kind, 20.0)
+
+## Rows of shots with an opening each, one every 0.8 s. Every row's opening was chosen when the charge began, and every
+## row after the first shows its own warning for the 0.55 s before it falls.
+func run_curtain(kind: int) -> void:
+	var gaps: Array = plan.gaps
+	var hue := "ion" if kind == BulletField.SHARD else ("warp" if kind == BulletField.SPORE else "warn")
+	for row in range(gaps.size()):
+		var at := float(row) * Telegraph.CURTAIN_GAP
+		g.after(at, curtain_row.bind(kind, float(gaps[row])))
+		if row > 0:
+			g.tg.add("curtain_row", maxf(0.0, at - Telegraph.CURTAIN_WARN), at, {"gap": float(gaps[row]), "hue": hue, "list": [float(gaps[row])]})
 
 func _update_stream(dt: float) -> void:
 	if stream_t <= 0.0:
@@ -382,17 +427,163 @@ func _update_stream(dt: float) -> void:
 	stream_t -= dt
 	stream_gap -= dt
 	if stream_gap <= 0.0:
-		stream_gap = 0.11
-		stream_angle += 0.41
+		stream_gap = STREAM_GAP
+		stream_angle += STREAM_STEP
 		for arm in range(stream_arms):
 			g.ebullet(muzzle(), stream_angle + float(arm) * TAU / float(stream_arms), speed(215.0), BulletField.ORB, 20.0)
 
+# ---------- Telegraphs ----------
+
+## Everything random about an attack is decided here, when the charge begins, and kept in the returned plan.
+func prepare(name_: String) -> Dictionary:
+	var p = prepare_special(name_)
+	if p == null:
+		p = {}
+		var w := float(g.W)
+		match name_:
+			"fan":
+				p.n = 9 + stage * 2
+			"burst":
+				p.n = 4 + stage
+			"ring":
+				p.count = 20 + stage * 4
+				p.gap = randi() % int(p.count)
+			"spiral":
+				p.angle = randf() * TAU
+				p.arms = 2 + stage
+			"curtain", "curtain_ice":
+				p.gaps = roll_gaps(3 + stage)
+			"curtain_spore":
+				p.gaps = roll_gaps(3)
+			"strike":
+				var xs: Array = [-1.0]
+				for i in range(stage):
+					xs.append(randf_range(60.0, w - 60.0))
+				p.xs = xs
+			"rocks":
+				_roll_group(p, 4 + stage, "rain", 50.0, "rock")
+			"raiders":
+				_roll_group(p, 3 + stage, "dive", 70.0, "raider")
+			"mines":
+				_roll_group(p, 2 + stage, "scatter", 80.0, "mine")
+	p.name = name_
+	p.stage = stage
+	return p
+
+func roll_gaps(rows: int) -> Array:
+	var out: Array = []
+	for i in range(rows):
+		out.append(randf_range(110.0, float(g.W) - 110.0))
+	return out
+
+## Picks where each member of a group enters, and the markers that will show it.
+func _roll_group(p: Dictionary, count: int, form: String, margin: float, shape: String) -> void:
+	var n: int = Telegraph.group_count(g, {"kind": "rocks" if shape == "rock" else shape, "count": count})
+	var xs: Array = []
+	var markers: Array = []
+	for i in range(n):
+		var x := randf_range(margin, float(g.W) - margin)
+		xs.append(x)
+		markers.append({"pos": Vector2(x, float(g.top) + Telegraph.MARKER_Y), "shape": shape, "delay": float(i) * float(Telegraph.STAGGER[form])})
+	p.xs = xs
+	p.markers = markers
+
+## Override: prepare a boss-specific attack. Return null when `name_` is not one of yours, otherwise a dictionary
+## (empty if nothing about it is random).
+func prepare_special(_name: String):
+	return null
+
+## Override: describe the warning for one of your attacks into `d` (see `describe`). Return true when handled.
+func describe_special(_p: Dictionary, _k: float, _d: Dictionary) -> bool:
+	return false
+
+## Override: warnings for attacks that run on their own timers rather than through a charge.
+func ambient() -> Array:
+	return []
+
+## The warning for a prepared attack `k` of the way through its charge: the real geometry, as a descriptor.
+func describe(p: Dictionary, k: float) -> Dictionary:
+	var from := muzzle()
+	var player: Vector2 = g.player_pos
+	var aim := (player - from).angle()
+	var reach := clampf(from.distance_to(player) + 140.0, 260.0, 1500.0)
+	var d := {"src": "boss", "kind": str(p.name), "hue": "warn", "k": k, "origin": from, "plan": p}
+	if describe_special(p, k, d):
+		return {} if str(d.get("style", "")) == "markers" and not Telegraph.summons_arrive else d
+	var w := float(g.W)
+	match str(p.name):
+		"fan":
+			d.style = "fan"
+			d.rays = Telegraph.fan_rays(from, int(p.n))
+			d.len = 560.0
+		"aimed":
+			d.style = "aimed"
+			d.rays = Telegraph.aimed_rays(from, aim)
+			d.len = reach
+		"burst":
+			d.style = "burst"
+			d.rays = Telegraph.aimed_rays(from, aim)
+			d.len = reach
+			d.n = int(p.n)
+			d.left = int(p.n)
+		"ring":
+			var count := int(p.count)
+			var gap := int(p.gap)
+			var step := TAU / float(count)
+			d.style = "ring_gap"
+			d.hue = "danger"
+			d.rays = Telegraph.ring_rays(from, count, gap)
+			d.step = step
+			d.gap_ang = (float(gap) + 0.5) * step
+			d.edge_a = float((gap - 1 + count) % count) * step
+			d.edge_b = float((gap + 2) % count) * step
+		"spiral":
+			d.style = "spiral"
+			d.hue = "arc"
+			d.arms = int(p.arms)
+			d.a0 = float(p.angle) + STREAM_STEP
+			d.kk = STREAM_STEP / (STREAM_GAP * speed(215.0))
+		"curtain", "curtain_ice", "curtain_spore":
+			var hue := "ion" if str(p.name) == "curtain_ice" else ("warp" if str(p.name) == "curtain_spore" else "warn")
+			d = Telegraph.curtain_desc(pos.y + 30.0, float((p.gaps as Array)[0]), w, k, hue)
+			d.kind = str(p.name)
+			d.rows = (p.gaps as Array).size()
+		"strike":
+			var cols: Array = []
+			for i in range((p.xs as Array).size()):
+				cols.append(player.x if i == 0 else float((p.xs as Array)[i]))
+			d.style = "columns"
+			d.hue = "warp"
+			d.xs = cols
+			d.hw = Hazards.WIDTH
+			d.tracked = true
+			d.track_y = player.y - 190.0
+		"rocks", "raiders", "mines":
+			d.style = "markers"
+			d.markers = p.markers
+		_:
+			return {}
+	if str(d.get("style", "")) == "markers" and not Telegraph.summons_arrive:
+		return {}
+	return d
+
 func paint_add(c: CanvasItem) -> void:
-	if charge > 0.0:
-		var k: float = 1.0 - charge / 0.55
-		UI.glow(c, muzzle(), 40.0 + k * 90.0, Color(1.0, 0.5, 0.3, 0.55 + k * 0.4))
 	for p in parts:
 		if p.alive and bool(p.weak):
 			var pulse: float = 0.8 + 0.2 * sin(t * 6.0)
 			c.draw_arc(p.at, float(p.r) + 10.0 * pulse, 0.0, TAU, 32, Color(UI.GOLD, 0.8), 3.0, true)
 			UI.glow(c, p.at, float(p.r) * 1.5, Color(UI.GOLD, 0.2))
+
+## The plan the running attack was prepared with. Falls back to a fresh one when an attack is called directly.
+func _take(name_: String) -> Dictionary:
+	var p := intent
+	intent = {}
+	if str(p.get("name", "")) == name_ and int(p.get("stage", -1)) == stage:
+		return p
+	return prepare(name_)
+
+## For `special()`: the plan of the attack being run.
+func plan_for(name_: String) -> Dictionary:
+	if str(plan.get("name", "")) != name_ or int(plan.get("stage", -1)) != stage:
+		plan = prepare(name_)
+	return plan

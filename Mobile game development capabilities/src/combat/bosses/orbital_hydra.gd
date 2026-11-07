@@ -54,8 +54,8 @@ func tick(dt: float) -> void:
 func _spit(head: Dictionary) -> void:
 	var from: Vector2 = (head.at as Vector2) + Vector2(0, 70)
 	var aim: float = ((g.player_pos as Vector2) - from).angle()
-	for i in range(3):
-		g.ebullet(from, aim + (float(i) - 1.0) * 0.2, speed(250.0), BulletField.SPORE, 22.0)
+	for r in Telegraph.fan_rays(from, 3, 0.2, aim):
+		g.ebullet(r.at, r.ang, speed(250.0), BulletField.SPORE, 22.0)
 	Audio.play("hatch", -8.0, 1.0, 0.1)
 
 func on_part_destroyed(part: Dictionary) -> void:
@@ -91,13 +91,44 @@ func rotation() -> Array:
 		return ["ring", "brood", "mines", "spiral"]
 	return ["spiral", "ring", "brood", "curtain_spore"]
 
+func prepare_special(name_: String):
+	if name_ == "brood":
+		var n: int = Telegraph.group_count(g, {"kind": "swarm", "count": 6 + stage * 2})
+		var origin := randf_range(150.0, float(g.W) - 150.0)
+		return {"origin": origin, "n": n, "markers": [{"pos": Vector2(origin, float(g.top) + Telegraph.MARKER_Y), "shape": "swarm", "delay": 0.0}]}
+	return null
+
+func describe_special(p: Dictionary, _k: float, d: Dictionary) -> bool:
+	if str(p.name) == "brood":
+		d.style = "markers"
+		d.markers = p.markers
+		return true
+	return false
+
+## Each head spits on its own timer, aimed at the ship at that moment: show it for the last 0.4 s of the wait.
+func ambient() -> Array:
+	var out: Array = []
+	if not can_be_hit():
+		return out
+	for h in heads:
+		var head: Dictionary = h.head
+		if head.alive and float(h.fire) > 0.0 and float(h.fire) <= 0.4:
+			var from: Vector2 = (head.at as Vector2) + Vector2(0, 70)
+			var aim: float = ((g.player_pos as Vector2) - from).angle()
+			out.append({"src": "boss", "kind": "spit", "style": "aimed", "hue": "warn", "k": 1.0 - float(h.fire) / 0.4, "origin": from,
+				"rays": Telegraph.fan_rays(from, 3, 0.2, aim), "len": clampf(from.distance_to(g.player_pos) + 140.0, 260.0, 1500.0)})
+	return out
+
 func special(name_: String) -> bool:
+	var p := plan_for(name_)
 	match name_:
 		"brood":
-			g.spawn_group({"kind": "swarm", "form": "swarm", "count": 6 + stage * 2, "delay": 0.0})
+			g.spawn_group({"kind": "swarm", "form": "swarm", "count": 6 + stage * 2, "delay": 0.0, "origin": p.origin})
+			var last := float(int(p.n) - 1) * float(Telegraph.STAGGER.swarm)
+			if last > 0.0 and Telegraph.summons_arrive:
+				g.tg.add("marker", 0.0, last, {"pos": (p.markers[0] as Dictionary).pos, "shape": "swarm"})
 			return true
 		"curtain_spore":
-			for row in range(3):
-				g.after(float(row) * 0.8, curtain_row.bind(BulletField.SPORE))
+			run_curtain(BulletField.SPORE)
 			return true
 	return false

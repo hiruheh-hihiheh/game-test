@@ -129,6 +129,8 @@ var boss = null
 var fallen_bosses: Array = []
 var field := BulletField.new()
 var fx := Fx.new()
+var tg := Telegraph.new()
+var tg_under: DrawLayer
 var shield_fx := ShieldFx.new(fx)
 var hazards: Hazards
 var hud: Hud
@@ -340,6 +342,7 @@ func _build_scene() -> void:
 	world = Node2D.new()
 	add_child(world)
 	ground_layer = _layer(world, hazards.paint_ground, true)
+	tg_under = _layer(world, _paint_tg_under)
 	pickup_glow = _batch(world, UI.glow_tex(), 90, add_mat)
 	pickup_batch = _batch(world, SALVAGE_ART, 90)
 	enemy_root = Node2D.new()
@@ -519,8 +522,11 @@ func _update_threat(dt: float) -> void:
 	Audio.set_intensity(threat)
 
 func _redraw() -> void:
+	tg.collect(self)
+	TelegraphPaint.build(tg.shown, t, W, H)
 	bg_layer.queue_redraw()
 	ground_layer.queue_redraw()
+	tg_under.queue_redraw()
 	fx_add.queue_redraw()
 	fx_top.queue_redraw()
 	_fill_batches()
@@ -596,6 +602,7 @@ func _update_world(dt: float) -> void:
 	_update_pickups(dt)
 	hazards.update(dt)
 	_update_timers(dt)
+	tg.update(dt)
 	if storm_t > 0.0:
 		_update_storm(dt)
 
@@ -1188,9 +1195,11 @@ func spawn_group(g: Dictionary) -> void:
 
 func _spawn_group(g: Dictionary) -> void:
 	var kind: String = g.kind
-	var scaled: bool = kind not in ["elite", "gunship", "frigate", "brood"]
-	var count: int = maxi(1, int(round(float(g.count) * (count_mult if scaled else 1.0))))
+	var count: int = Telegraph.group_count(self, g)
 	var form: String = g.form
+	# A boss that already announced where its group enters passes the positions in `xs`.
+	var xs: Array = g.get("xs", [])
+	var ys: Array = g.get("ys", [])
 	var extra := {"mod": str(g.get("mod", ""))}
 	var speed: float = scale_cfg.speed
 	var mid := W * 0.5
@@ -1203,7 +1212,7 @@ func _spawn_group(g: Dictionary) -> void:
 				var rock := "rock_l" if roll < 0.24 else ("rock_m" if roll < 0.62 else "rock_s")
 				if level_num <= 2 and mode == "campaign":
 					rock = "rock_m" if roll < 0.4 else "rock_s"
-				queue_spawn(float(i) * 0.42, rock, Vector2(randf_range(50.0, W - 50.0), -70.0), "straight", Vector2(randf_range(-45.0, 45.0), randf_range(120.0, 200.0) * speed))
+				queue_spawn(float(i) * 0.42, rock, Vector2(float(xs[i]) if i < xs.size() else randf_range(50.0, W - 50.0), -70.0), "straight", Vector2(randf_range(-45.0, 45.0), randf_range(120.0, 200.0) * speed))
 		"drift":
 			for i in range(count):
 				queue_spawn(float(i) * 0.9, kind, Vector2(randf_range(90.0, W - 90.0), -90.0), "drift", Vector2(randf_range(-14.0, 14.0), randf_range(58.0, 84.0) * speed))
@@ -1230,7 +1239,7 @@ func _spawn_group(g: Dictionary) -> void:
 		"pincer":
 			for i in range(count):
 				var left := i % 2 == 0
-				var start := Vector2(-60.0 if left else W + 60.0, randf_range(190.0, 340.0))
+				var start := Vector2(-60.0 if left else W + 60.0, float(ys[i]) if i < ys.size() else randf_range(190.0, 340.0))
 				var heading := -0.15 if left else PI + 0.15
 				var ex := {"turn": 1.5 if left else -1.5}
 				ex.merge(extra)
@@ -1238,12 +1247,12 @@ func _spawn_group(g: Dictionary) -> void:
 		"dive":
 			for i in range(count):
 				var move := "hunt" if kind == "cinder" else "dive"
-				queue_spawn(float(i) * 0.55, kind, Vector2(randf_range(70.0, W - 70.0), -70.0), move, Vector2(0, 170.0 * speed), extra)
+				queue_spawn(float(i) * 0.55, kind, Vector2(float(xs[i]) if i < xs.size() else randf_range(70.0, W - 70.0), -70.0), move, Vector2(0, 170.0 * speed), extra)
 		"scatter":
 			for i in range(count):
-				queue_spawn(float(i) * 0.6, kind, Vector2(randf_range(80.0, W - 80.0), -60.0), "drift", Vector2(0, randf_range(85.0, 125.0) * speed), extra)
+				queue_spawn(float(i) * 0.6, kind, Vector2(float(xs[i]) if i < xs.size() else randf_range(80.0, W - 80.0), -60.0), "drift", Vector2(0, randf_range(85.0, 125.0) * speed), extra)
 		"swarm":
-			var origin := randf_range(150.0, W - 150.0)
+			var origin: float = float(g.origin) if g.has("origin") else randf_range(150.0, W - 150.0)
 			for i in range(count):
 				queue_spawn(float(i) * 0.14, kind, Vector2(origin + randf_range(-110.0, 110.0), -60.0), "swarm", Vector2(0, 210.0 * speed), extra)
 		"hold":
@@ -1284,7 +1293,7 @@ func spawn_enemy(cfg: Dictionary) -> Dictionary:
 		"id": next_id, "kind": kind, "pos": cfg.pos, "vel": cfg.vel, "move": cfg.move, "hp": hp, "max": hp,
 		"r": info.r, "hue": hue, "sprite": sp, "age": 0.0, "dead": false, "size": size,
 		"fire": randf_range(0.8, float(info.fire)) if float(info.fire) > 0.0 else 0.0,
-		"rate": info.fire, "shot": info.shot, "tell": 0.0, "flash": 0.0, "spin": randf_range(-1.8, 1.8), "base": float(cfg.pos.x),
+		"rate": info.fire, "shot": info.shot, "tell": 0.0, "tell_max": Telegraph.tell_time(str(info.shot)), "tphase": 0.0, "flash": 0.0, "spin": randf_range(-1.8, 1.8), "base": float(cfg.pos.x),
 		"amp": float(cfg.get("amp", 0.0)), "freq": float(cfg.get("freq", 1.0)), "turn": float(cfg.get("turn", 0.0)),
 		"hold_y": float(cfg.get("hold_y", 0.0)), "score": info.score, "drop": info.drop,
 		"heavy": info.get("heavy", false), "cover": info.get("cover", false), "volatile": info.get("volatile", false),
@@ -1360,7 +1369,7 @@ func _update_enemies(dt: float) -> void:
 				_escort_arrived(e)
 			_release_enemy(i, e)
 			continue
-		if float(e.rate) > 0.0 and pos.y > top + 40.0 and pos.y < player_pos.y - 170.0 and local_dt > 0.0:
+		if enemy_can_fire(e) and local_dt > 0.0:
 			e.fire -= local_dt * float(scale_cfg.fire) * fire_mult_enemy
 			if float(e.tell) > 0.0:
 				e.tell -= dt
@@ -1368,7 +1377,12 @@ func _update_enemies(dt: float) -> void:
 					_enemy_shoot(e)
 					e.fire = float(e.rate) * randf_range(0.85, 1.15)
 			elif float(e.fire) <= 0.0:
-				e.tell = 0.5 if str(e.shot) in ["lance", "fan", "elite", "broadside", "bomb"] else 0.3
+				# The warning is drawn from this timer, so it lasts exactly as long as the tell does.
+				e.tell = Telegraph.tell_time(str(e.shot))
+				e.tell_max = e.tell
+				e.tphase = t
+				if str(e.shot) == "elite":
+					Audio.play("charge", -12.0, 1.5)
 		if player_alive and phase in COMBAT_PHASES and not e.ghost and not e.ally:
 			var reach: float = float(e.r) * 0.82 + 20.0
 			if pos.distance_squared_to(player_pos) < reach * reach:
@@ -1380,6 +1394,15 @@ func _update_enemies(dt: float) -> void:
 					hurt_player(32.0)
 					if not e.heavy:
 						_kill_enemy(e, false)
+
+## The same test that decides whether an enemy may start or finish a tell. The warning only shows while this is true.
+func enemy_can_fire(e: Dictionary) -> bool:
+	var pos: Vector2 = e.pos
+	return float(e.rate) > 0.0 and pos.y > top + 40.0 and pos.y < player_pos.y - 170.0
+
+## The angle an aimed enemy shot takes right now: the warning and the shot both ask this.
+func enemy_aim(e: Dictionary) -> float:
+	return (player_pos - (e.pos as Vector2)).angle()
 
 func _release_enemy(i: int, e: Dictionary) -> void:
 	give_sprite(e.sprite)
@@ -1533,49 +1556,57 @@ func _facing(kind: String, vel: Vector2) -> float:
 
 func _enemy_shoot(e: Dictionary) -> void:
 	var from: Vector2 = e.pos
-	var aim: float = (player_pos - from).angle()
+	var aim: float = enemy_aim(e)
 	var speed: float = 270.0 * float(scale_cfg.bullet) * bullet_mult
-	match str(e.shot):
+	var shot := str(e.shot)
+	# Where each shot starts and which way it goes comes from Telegraph, the same place its warning reads it.
+	var rays := Telegraph.enemy_shots(shot, from, aim, float(e.get("tphase", t)))
+	match shot:
 		"aimed":
-			ebullet(from + Vector2(0, 40), aim, speed, BulletField.ORB)
+			for r in rays:
+				ebullet(r.at, r.ang, speed, BulletField.ORB)
 		"twin":
-			ebullet(from + Vector2(-26, 30), PI * 0.5, speed * 1.08, BulletField.DART, 18.0)
-			ebullet(from + Vector2(26, 30), PI * 0.5, speed * 1.08, BulletField.DART, 18.0)
+			for r in rays:
+				ebullet(r.at, r.ang, speed * 1.08, BulletField.DART, 18.0)
 		"fan":
-			for i in range(5):
-				ebullet(from + Vector2(0, 80), aim + (float(i) - 2.0) * 0.2, speed * 0.95, BulletField.DART)
+			for r in rays:
+				ebullet(r.at, r.ang, speed * 0.95, BulletField.DART)
 		"lance":
 			for i in range(5):
 				after(float(i) * 0.09, _lance_shot.bind(e, aim))
 		"bomb":
-			for side in [-0.32, 0.0, 0.32]:
-				ebullet(from + Vector2(0, 50), PI * 0.5 + float(side), speed * 0.6, BulletField.HEAVY, 30.0)
+			for r in rays:
+				ebullet(r.at, r.ang, speed * 0.6, BulletField.HEAVY, 30.0)
 		"broadside":
-			for i in range(5):
-				ebullet(from + Vector2((float(i) - 2.0) * 44.0, 30), PI * 0.5, speed * 0.9, BulletField.DART)
+			for r in rays:
+				ebullet(r.at, r.ang, speed * 0.9, BulletField.DART)
 		"spawn":
-			for side in [-1.0, 1.0]:
-				spawn_enemy({"kind": "swarmlet", "pos": from + Vector2(side * 60.0, 50.0), "move": "swarm", "vel": Vector2(side * 80.0, 190.0)})
+			var side := -1.0
+			for p in Telegraph.spawn_points(from):
+				spawn_enemy({"kind": "swarmlet", "pos": p, "move": "swarm", "vel": Vector2(side * 80.0, 190.0)})
+				side = 1.0
 			Audio.play("hatch", -9.0, 1.3)
 			return
 		"elite":
-			for i in range(14):
-				ebullet(from + Vector2(0, 40), float(i) * TAU / 14.0 + t, speed * 0.8, BulletField.ORB)
-			after(0.45, _elite_followup.bind(e))
+			for r in rays:
+				ebullet(r.at, r.ang, speed * 0.8, BulletField.ORB)
+			after(Telegraph.ELITE_FOLLOW_DELAY, _elite_followup.bind(e))
+			# The second volley is a different attack: it gets its own warning, starting now.
+			tg.add("elite_follow", 0.0, Telegraph.ELITE_FOLLOW_DELAY, {"list": [int(e.id)]}, e)
 	Audio.play("enemy_shoot", -12.0, 1.0, 0.1)
 
 func _lance_shot(e: Dictionary, aim: float) -> void:
 	if e.dead:
 		return
-	ebullet((e.pos as Vector2) + Vector2.from_angle(aim) * 60.0, aim, 400.0 * float(scale_cfg.bullet) * bullet_mult, BulletField.SHARD, 20.0)
+	var r: Dictionary = Telegraph.enemy_shots("lance", e.pos, aim, 0.0)[0]
+	ebullet(r.at, r.ang, 400.0 * float(scale_cfg.bullet) * bullet_mult, BulletField.SHARD, 20.0)
 
 func _elite_followup(e: Dictionary) -> void:
+	tg.fired("elite_follow", int(e.id))
 	if e.dead or not player_alive:
 		return
-	var from: Vector2 = e.pos
-	var aim: float = (player_pos - from).angle()
-	for i in range(3):
-		ebullet(from + Vector2(0, 80), aim + (float(i) - 1.0) * 0.16, 330.0 * float(scale_cfg.bullet) * bullet_mult, BulletField.DART)
+	for r in Telegraph.enemy_shots("elite_follow", e.pos, enemy_aim(e), 0.0):
+		ebullet(r.at, r.ang, 330.0 * float(scale_cfg.bullet) * bullet_mult, BulletField.DART)
 
 func ebullet(at: Vector2, angle: float, speed: float, kind: int, damage := 24.0) -> void:
 	field.add(at, Vector2.from_angle(angle) * speed, kind, damage)
@@ -2464,12 +2495,14 @@ func _paint_fx_add(c: DrawLayer) -> void:
 			ShieldFx.paint_enemy(c, e, t)
 		if e.heavy:
 			UI.glow(c, e.pos, float(e.r) * 2.0, Color(UI.MAGENTA, 0.16 + sin(t * 4.0) * 0.05))
-		if float(e.tell) > 0.0:
-			var k: float = clampf(1.0 - float(e.tell) / 0.5, 0.0, 1.0)
-			UI.glow(c, (e.pos as Vector2) + Vector2(0, float(e.r) * 0.7), 30.0 + 50.0 * k, Color(1.0, 0.4, 0.4, 0.4 + k * 0.5))
+	TelegraphPaint.paint_add(c)
 	if boss != null:
 		boss.paint_add(c)
 	hazards.paint_air(c)
+
+## Dark outlines and faint fills beneath the warnings, so they read on a bright background too.
+func _paint_tg_under(c: DrawLayer) -> void:
+	TelegraphPaint.paint_under(c)
 
 func _paint_beam(c: DrawLayer) -> void:
 	var width := 15.0 + float(s.pierce) * 7.0

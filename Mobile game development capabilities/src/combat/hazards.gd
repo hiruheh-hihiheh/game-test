@@ -28,15 +28,24 @@ func event(name_: String, amount: float) -> void:
 				add_beam("row", y, 1.05 + float(i) * 0.3, 0.5, UI.RED, 34.0)
 		"ember":
 			for i in range(n):
-				add_zone("ember", Vector2(randf_range(120.0, g.W - 120.0), randf_range(g.H * 0.48, g.H - 300.0)), 120.0, 11.0)
+				add_zone("ember", roll_spot("ember"), 120.0, 11.0)
 		"frost":
 			for i in range(n):
-				add_zone("frost", Vector2(randf_range(120.0, g.W - 120.0), randf_range(g.top + 260.0, g.H - 340.0)), 170.0, 13.0)
+				add_zone("frost", roll_spot("frost"), 170.0, 13.0)
 		"well":
 			for i in range(n):
-				add_well(Vector2(randf_range(120.0, g.W - 120.0), randf_range(g.top + 300.0, g.H * 0.6)), 1.0, 12.0)
+				add_well(roll_spot("well"), 1.0, 12.0)
 		"spokes":
 			add_spokes(Vector2(g.W * 0.5, g.H * 0.46), 3, 0.5, 11.0)
+
+## Where the next ember zone, frost zone or well would go. Bosses call this when a charge begins so the warning shows the real spot.
+func roll_spot(kind: String) -> Vector2:
+	match kind:
+		"ember":
+			return Vector2(randf_range(120.0, g.W - 120.0), randf_range(g.H * 0.48, g.H - 300.0))
+		"frost":
+			return Vector2(randf_range(120.0, g.W - 120.0), randf_range(g.top + 260.0, g.H - 340.0))
+	return Vector2(randf_range(120.0, g.W - 120.0), randf_range(g.top + 300.0, g.H * 0.6))
 
 func add_beam(axis: String, at: float, warn: float, live: float, color: Color, damage: float, width := WIDTH) -> void:
 	beams.append({"axis": axis, "at": at, "warn": warn, "live": live, "t": 0.0, "color": color, "dmg": damage, "fired": false, "w": width})
@@ -59,8 +68,13 @@ func add_singularity(pos: Vector2) -> void:
 	wells.append(w)
 	g.field.wells.append(w)
 
-func add_spokes(center: Vector2, arms: int, speed: float, life: float) -> void:
-	spokes.append({"c": center, "arms": arms, "speed": speed * (1.0 if randf() < 0.5 else -1.0), "angle": randf() * TAU, "t": 0.0, "warn": 1.4, "life": life})
+## `angle` and `dir` (1 or -1) are chosen at random unless the caller already chose them for its warning.
+func add_spokes(center: Vector2, arms: int, speed: float, life: float, angle := -1.0, dir := 0.0) -> void:
+	if dir == 0.0:
+		dir = 1.0 if randf() < 0.5 else -1.0
+	if angle < 0.0:
+		angle = randf() * TAU
+	spokes.append({"c": center, "arms": arms, "speed": speed * dir, "angle": angle, "t": 0.0, "warn": 1.4, "life": life})
 	Audio.play("charge", -3.0)
 
 func side_warning() -> void:

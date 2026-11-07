@@ -38,32 +38,94 @@ func on_stage() -> void:
 	vent_open = 4.0
 	set_vents(true)
 
+## Chosen when the charge begins, so the warning shows what the attack will really do. A y of -1 means "where the ship is when it fires".
+func prepare_special(name_: String):
+	var w := float(g.W)
+	match name_:
+		"flame":
+			var n := 2 + stage
+			var offset := randf_range(0.0, w / float(n))
+			var xs: Array = []
+			for i in range(n):
+				xs.append(fmod(offset + float(i) * w / float(n), w - 80.0) + 40.0)
+			return {"xs": xs}
+		"embers":
+			return {"spots": [g.hazards.roll_spot("ember"), g.hazards.roll_spot("ember")]}
+		"sweep":
+			var ys: Array = [-1.0]
+			for i in range(stage):
+				ys.append(randf_range(float(g.H) * 0.5, float(g.H) - 260.0))
+			return {"ys": ys}
+		"cinders":
+			var p := {}
+			_roll_group(p, 3 + stage, "dive", 70.0, "cinder")
+			return p
+		"meltdown":
+			return {}
+	return null
+
+func describe_special(p: Dictionary, _k: float, d: Dictionary) -> bool:
+	match str(p.name):
+		"flame":
+			d.style = "columns"
+			d.hue = "ember"
+			d.xs = p.xs
+			d.hw = 64.0
+			return true
+		"embers":
+			d.style = "spots"
+			d.hue = "ember"
+			d.spots = [{"pos": (p.spots as Array)[0], "r": 120.0, "shape": "ember"}, {"pos": (p.spots as Array)[1], "r": 120.0, "shape": "ember"}]
+			return true
+		"sweep":
+			var ys: Array = []
+			for i in range((p.ys as Array).size()):
+				ys.append(float(g.player_pos.y) if i == 0 else float((p.ys as Array)[i]))
+			d.style = "rows"
+			d.hue = "ember"
+			d.ys = ys
+			d.hw = Hazards.WIDTH
+			d.tracked = true
+			return true
+		"cinders":
+			d.style = "markers"
+			d.markers = p.markers
+			return true
+		"meltdown":
+			d.style = "radial"
+			d.hue = "danger"
+			d.rays = Telegraph.radial_rays(muzzle(), 16)
+			d.rl = 260.0
+			d.centre = muzzle()
+			return true
+	return false
+
 func special(name_: String) -> bool:
+	var p := plan_for(name_)
 	match name_:
 		"flame":
 			Audio.play("flame")
-			var n := 2 + stage
-			var offset := randf_range(0.0, float(g.W) / float(n))
-			for i in range(n):
-				var x: float = fmod(offset + float(i) * float(g.W) / float(n), float(g.W) - 80.0) + 40.0
-				g.hazards.add_beam("col", x, 0.9, 0.7, UI.ORANGE, 34.0, 64.0)
+			for x in p.xs:
+				g.hazards.add_beam("col", float(x), 0.9, 0.7, UI.ORANGE, 34.0, 64.0)
 			# The vents vent after the flames: this is the window to hit them.
 			g.after(1.5, _open_vents)
 			return true
 		"embers":
-			g.hazards.event("ember", 2.0)
+			for spot in p.spots:
+				g.hazards.add_zone("ember", spot, 120.0, 11.0)
 			return true
 		"sweep":
-			for i in range(1 + stage):
-				var y: float = randf_range(float(g.H) * 0.5, float(g.H) - 260.0) if i > 0 else float(g.player_pos.y)
+			var ys: Array = p.ys
+			for i in range(ys.size()):
+				var y: float = float(g.player_pos.y) if i == 0 else float(ys[i])
 				g.hazards.add_beam("row", y, 1.1, 0.5, UI.ORANGE, 34.0)
 			return true
 		"cinders":
-			g.spawn_group({"kind": "cinder", "form": "dive", "count": 3 + stage, "delay": 0.0})
+			_group({"kind": "cinder", "form": "dive", "count": 3 + stage, "delay": 0.0}, "cinder")
 			return true
 		"meltdown":
-			for i in range(16):
-				g.ebullet(muzzle(), float(i) * TAU / 16.0, speed(230.0), BulletField.DART)
+			for r in Telegraph.radial_rays(muzzle(), 16):
+				g.ebullet(r.at, r.ang, speed(230.0), BulletField.DART)
 			g.after(0.5, _open_vents)
 			return true
 	return false

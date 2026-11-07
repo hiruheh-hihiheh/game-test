@@ -58,22 +58,59 @@ func rotation() -> Array:
 		return ["mirror", "shards", "frost", "blink", "raise"]
 	return ["mirror", "curtain_ice", "raise", "blink", "frost", "strike"]
 
-func special(name_: String) -> bool:
+## The shard fan: where it starts and each shot's angle, aimed at the ship right now.
+func shard_rays() -> Array:
+	var from: Vector2 = pos + Vector2(0, 120)
+	return Telegraph.fan_rays(from, 7 + stage * 2, 0.15, ((g.player_pos as Vector2) - from).angle())
+
+func prepare_special(name_: String):
 	match name_:
 		"shards":
-			var from: Vector2 = pos + Vector2(0, 120)
-			var n := 7 + stage * 2
-			var aim: float = ((g.player_pos as Vector2) - from).angle()
+			return {}
+		"frost":
+			return {"spots": [g.hazards.roll_spot("frost"), g.hazards.roll_spot("frost")]}
+		"raise":
+			var n: int = Telegraph.group_count(g, {"kind": "revenant", "count": 3 + stage})
+			var markers: Array = []
 			for i in range(n):
-				g.ebullet(from, aim + (float(i) - float(n - 1) * 0.5) * 0.15, speed(290.0), BulletField.SHARD, 22.0)
+				markers.append({"pos": Vector2(float(g.W) * (float(i) + 1.0) / (float(n) + 1.0), float(g.top) + Telegraph.MARKER_Y), "shape": "revenant", "delay": 0.0})
+			return {"markers": markers}
+	return null
+
+func describe_special(p: Dictionary, _k: float, d: Dictionary) -> bool:
+	match str(p.name):
+		"shards":
+			d.style = "fan"
+			d.hue = "ion"
+			d.rays = shard_rays()
+			d.origin = pos + Vector2(0, 120)
+			d.len = clampf(pos.distance_to(g.player_pos) + 140.0, 320.0, 1500.0)
+			return true
+		"frost":
+			d.style = "spots"
+			d.hue = "ion"
+			d.spots = [{"pos": (p.spots as Array)[0], "r": 170.0, "shape": "frost"}, {"pos": (p.spots as Array)[1], "r": 170.0, "shape": "frost"}]
+			return true
+		"raise":
+			d.style = "markers"
+			d.markers = p.markers
+			return true
+	return false
+
+func special(name_: String) -> bool:
+	var p := plan_for(name_)
+	match name_:
+		"shards":
+			for r in shard_rays():
+				g.ebullet(r.at, r.ang, speed(290.0), BulletField.SHARD, 22.0)
 			Audio.play("ice", -5.0, 1.2)
 			return true
 		"curtain_ice":
-			for row in range(3 + stage):
-				g.after(float(row) * 0.8, curtain_row.bind(BulletField.SHARD))
+			run_curtain(BulletField.SHARD)
 			return true
 		"frost":
-			g.hazards.event("frost", 2.0)
+			for spot in p.spots:
+				g.hazards.add_zone("frost", spot, 170.0, 13.0)
 			return true
 		"raise":
 			g.spawn_group({"kind": "revenant", "form": "line", "count": 3 + stage, "delay": 0.0, "mod": ""})

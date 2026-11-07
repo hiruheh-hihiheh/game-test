@@ -89,6 +89,8 @@ func _run() -> void:
 	await _test_pilot_profile()
 	await _test_cloud_save()
 	await _test_combat_polish()
+	await _test_telegraphs()
+	await _test_telegraph_bosses()
 	await _test_glass_hud()
 	await _test_touch_targets()
 	await _test_expedition()
@@ -4251,6 +4253,880 @@ func _test_combat_polish() -> void:
 	save.ship = saved_ship
 	save.upgrades = saved_upgrades
 	print("combat polish ok")
+
+# ---------- Attack telegraphs ----------
+var TgS
+var TgPaintS
+var BfS
+var BossS
+# Every check compares what the player is SHOWN (the descriptors from TgS.collect) with what the attack then
+# really emitted: its bullets, beams, zones and spawns. Nothing here only asks whether a warning object exists.
+
+const TG_SHOTS := {"aimed": "fighter", "twin": "weaver", "fan": "gunship", "lance": "sentinel", "bomb": "bomber", "broadside": "frigate", "spawn": "brood", "elite": "elite"}
+## Attacks that are deliberately not warned, with the reason. Everything else a boss does must have a warning.
+const TG_EXCLUDED := {"blink": "the Regent only moves; nothing is fired", "mirror": "teleports and places decoys; the burst is a reaction to a decoy being shot"}
+
+func _tg_ang_eq(a: float, b: float) -> bool:
+	return absf(wrapf(a - b, -PI, PI)) < 0.002
+
+func _tg_bullets(game) -> Array:
+	var out: Array = []
+	for i in range(game.field.count):
+		out.append({"at": game.field.pos[i], "ang": game.field.vel[i].angle(), "speed": game.field.vel[i].length(), "dmg": game.field.dmg[i], "kind": game.field.kind[i]})
+	return out
+
+## True when every ray has exactly one bullet at its origin and angle, and there are no other bullets.
+func _tg_match(rays: Array, bullets: Array) -> bool:
+	if rays.size() != bullets.size() or rays.is_empty():
+		return false
+	var used := {}
+	for r in rays:
+		var found := false
+		for j in range(bullets.size()):
+			if used.has(j):
+				continue
+			var b: Dictionary = bullets[j]
+			if ((r.at as Vector2) - (b.at as Vector2)).length() < 0.05 and _tg_ang_eq(float(r.ang), float(b.ang)):
+				used[j] = true
+				found = true
+				break
+		if not found:
+			return false
+	return true
+
+## Runs the game's timers (and the warning store) the way _update_world does.
+func _tg_flush(game, seconds: float) -> void:
+	var left := seconds
+	while left > 0.0:
+		var dt := minf(0.02, left)
+		game._update_timers(dt)
+		game.tg.update(dt)
+		left -= dt
+
+func _tg_desc(game, owner) -> Dictionary:
+	game.tg.collect(game)
+	for d in game.tg.shown:
+		if d.has("owner") and is_same(d.owner, owner):
+			return d
+	return {}
+
+func _tg_reset(game) -> void:
+	game.field.clear()
+	game.timers.clear()
+	game.pending.clear()
+	game.tg.clear()
+	game.hazards.beams.clear()
+	game.hazards.zones.clear()
+	game.hazards.wells.clear()
+	game.hazards.spokes.clear()
+	game.field.wells.clear()
+	game.field.frost.clear()
+	for i in range(game.enemies.size() - 1, -1, -1):
+		game._release_enemy(i, game.enemies[i])
+
+func _tg_enemy(game, shot: String, at: Vector2) -> Dictionary:
+	var e: Dictionary = game.spawn_enemy({"kind": TG_SHOTS[shot], "pos": at, "vel": Vector2.ZERO, "move": "straight"})
+	e.fire = 0.0
+	return e
+
+## The shots of each enemy attack written out from the original `_enemy_shoot`, independent of Telegraph.
+func _tg_original_shots(shot: String, pos: Vector2, player: Vector2, phase: float) -> Array:
+	var aim := (player - pos).angle()
+	var out: Array = []
+	match shot:
+		"aimed":
+			out.append({"at": pos + Vector2(0, 40), "ang": aim})
+		"twin":
+			out.append({"at": pos + Vector2(-26, 30), "ang": PI * 0.5})
+			out.append({"at": pos + Vector2(26, 30), "ang": PI * 0.5})
+		"fan":
+			for i in range(5):
+				out.append({"at": pos + Vector2(0, 80), "ang": aim + (float(i) - 2.0) * 0.2})
+		"bomb":
+			for side in [-0.32, 0.0, 0.32]:
+				out.append({"at": pos + Vector2(0, 50), "ang": PI * 0.5 + float(side)})
+		"broadside":
+			for i in range(5):
+				out.append({"at": pos + Vector2((float(i) - 2.0) * 44.0, 30), "ang": PI * 0.5})
+		"elite":
+			for i in range(14):
+				out.append({"at": pos + Vector2(0, 40), "ang": float(i) * TAU / 14.0 + phase})
+	return out
+
+func _test_telegraphs() -> void:
+	TgS = load("res://src/combat/telegraph.gd")
+	TgPaintS = load("res://src/combat/telegraph_paint.gd")
+	BfS = load("res://src/combat/bullet_field.gd")
+	BossS = load("res://src/combat/boss_base.gd")
+	var saved_opt = save.opt.duplicate()
+	var game = await _new_game(_level(3))
+	game.level.waves[0] = []
+	game.elite_chance = 0.0
+	game.phase = game.Phase.PLAYING
+	game.player_pos = Vector2(420, 1100)
+	game.player_target = game.player_pos
+	var bm: float = float(game.scale_cfg.bullet) * float(game.bullet_mult)
+	# What each shot should look like on the field, so the refactor to shared geometry provably changed nothing:
+	# [speed, damage, bullet kind, count].
+	var expect := {
+		"aimed": [270.0, 24.0, BfS.ORB, 1], "twin": [270.0 * 1.08, 18.0, BfS.DART, 2], "fan": [270.0 * 0.95, 24.0, BfS.DART, 5],
+		"bomb": [270.0 * 0.6, 30.0, BfS.HEAVY, 3], "broadside": [270.0 * 0.9, 24.0, BfS.DART, 5], "elite": [270.0 * 0.8, 24.0, BfS.ORB, 14],
+	}
+
+	# --- Enemy attacks: the warning is a function of the tell timer, and shows the shot that follows ---
+	for shot in TG_SHOTS:
+		_tg_reset(game)
+		var e := _tg_enemy(game, shot, Vector2(300, 420))
+		game._update_enemies(STEP)
+		check(float(e.tell) > 0.0 and is_equal_approx(float(e.tell_max), TgS.tell_time(shot)), "%s: the existing tell still starts, for %.1fs" % [shot, TgS.tell_time(shot)])
+		var d := _tg_desc(game, e)
+		check(not d.is_empty() and str(d.kind) == shot, "%s: a warning is shown while the enemy prepares" % shot)
+		var k0: float = float(d.get("k", -1.0))
+		var rising := true
+		var last_k := k0
+		while float(e.tell) > 0.07:
+			game._update_enemies(0.05)
+			var dd := _tg_desc(game, e)
+			rising = rising and not dd.is_empty() and float(dd.k) >= last_k - 1e-6 and absf(float(dd.k) - (1.0 - float(e.tell) / float(e.tell_max))) < 1e-5
+			last_k = float(dd.get("k", -1.0))
+		check(rising and last_k > 0.5, "%s: the warning follows the tell timer from %.2f to %.2f" % [shot, k0, last_k])
+		# The ship moves just before the shot. Aimed attacks must follow it; lanes must not.
+		var before_rays: Array = _tg_desc(game, e).get("rays", [])
+		game.player_pos = Vector2(180, 1010)
+		var pre := _tg_desc(game, e)
+		var tracks: bool = shot in ["aimed", "fan", "lance"]
+		if not before_rays.is_empty() and shot != "spawn" and shot != "elite":
+			var moved := not _tg_ang_eq(float((before_rays[0] as Dictionary).ang), float((pre.rays as Array)[0].ang))
+			check(moved == tracks, "%s: the warning %s the ship like the shot does" % [shot, "tracks" if tracks else "does not follow"])
+		var first_new = game.field.count
+		var enemies_before: int = game.enemies.size()
+		game.t += 0.37  # time passes between the warning and the shot; nothing previewed may depend on it
+		game._update_enemies(0.07)
+		check(float(e.tell) <= 0.0, "%s: the shot fires when the tell ends" % shot)
+		if shot == "lance":
+			_tg_flush(game, 0.6)
+		var bullets := _tg_bullets(game)
+		if shot == "spawn":
+			var born: Array = []
+			for i in range(enemies_before, game.enemies.size()):
+				born.append(game.enemies[i].pos)
+			var marks: Array = []
+			for m in pre.markers:
+				marks.append(m.pos)
+			check(born.size() == 2 and marks.size() == 2 and marks[0].is_equal_approx(born[0]) and marks[1].is_equal_approx(born[1]), "spawn: the two markers sit exactly where the swarmlets appear")
+			check(game.field.count == 0, "spawn: no projectile warning for an attack that fires none")
+		elif shot == "lance":
+			var ok := bullets.size() == 5
+			for b in bullets:
+				ok = ok and _tg_ang_eq(float(b.ang), float((pre.rays as Array)[0].ang)) and absf(float(b.speed) - 400.0 * bm) < 0.05 and int(b.kind) == BfS.SHARD and absf(float(b.dmg) - 20.0) < 1e-4
+			check(ok, "lance: all five delayed shots use the captured aim shown by the warning, at the same speed and damage")
+		else:
+			check(_tg_match(pre.rays, bullets), "%s: the warning's rays match the %d projectiles exactly (origin and angle)" % [shot, bullets.size()])
+			check(_tg_match(_tg_original_shots(shot, e.pos, game.player_pos, float(e.tphase)), bullets), "%s: and those projectiles are the ones the original attack formulas give" % shot)
+			var x: Array = expect[shot]
+			var same := bullets.size() == int(x[3])
+			for b in bullets:
+				same = same and absf(float(b.speed) - float(x[0]) * bm) < 0.05 and int(b.kind) == int(x[2]) and absf(float(b.dmg) - float(x[1])) < 1e-4
+			check(same, "%s: projectile count, speed, damage and type are exactly what they were" % shot)
+		var after := _tg_desc(game, e)
+		if shot == "elite":
+			# The ring just fired. What is shown now is the follow-up volley, 0.45s later, aimed at the ship.
+			check(str(after.get("kind", "")) == "elite_follow" and (after.rays as Array).size() == 3, "elite: after the ring, the follow-up shows as its own warning (not as part of the ring)")
+			var fu_rays: Array = after.rays
+			game.field.clear()
+			_tg_flush(game, 0.3)
+			check(not _tg_desc(game, e).is_empty() and game.field.count == 0, "elite: the follow-up is still only a warning 0.3s later")
+			_tg_flush(game, 0.2)
+			check(_tg_match(fu_rays, _tg_bullets(game)) and _tg_desc(game, e).is_empty(), "elite: the follow-up's three shots match its warning, which then disappears")
+		else:
+			check(after.is_empty(), "%s: no warning is left after the attack" % shot)
+		game.player_pos = Vector2(420, 1100)
+	_tg_reset(game)
+
+	# --- The elite ring phase is chosen when the tell begins and reused at the shot ---
+	var el := _tg_enemy(game, "elite", Vector2(300, 420))
+	game._update_enemies(STEP)
+	var phase0: float = float(el.tphase)
+	var seen_a = (_tg_desc(game, el).rays as Array)[0].ang
+	game.t += 0.4
+	check(float(el.tphase) == phase0 and _tg_ang_eq(float((_tg_desc(game, el).rays as Array)[0].ang), float(seen_a)), "elite: time passing does not turn the previewed ring")
+	_tg_reset(game)
+
+	# --- Dead, frozen and out-of-range enemies leave nothing behind ---
+	var dead := _tg_enemy(game, "aimed", Vector2(300, 420))
+	game._update_enemies(STEP)
+	check(not _tg_desc(game, dead).is_empty(), "a warning is shown for a preparing enemy")
+	game._kill_enemy(dead, true)
+	check(_tg_desc(game, dead).is_empty(), "killing the enemy removes its warning at once")
+	game._update_enemies(STEP)
+	check(_tg_desc(game, dead).is_empty() and game.tg.shown.is_empty(), "and none comes back after it is released")
+	var cold := _tg_enemy(game, "fan", Vector2(300, 420))
+	game._update_enemies(STEP)
+	cold.frozen = 1.0
+	check(_tg_desc(game, cold).is_empty(), "a frozen enemy shows no warning (its tell is paused too)")
+	cold.frozen = 0.0
+	cold.pos = Vector2(300, 1050)
+	check(_tg_desc(game, cold).is_empty(), "an enemy that can no longer fire shows no warning")
+	_tg_reset(game)
+	var wake := _tg_enemy(game, "elite", Vector2(300, 420))
+	game._update_enemies(STEP)
+	game._update_enemies(1.0)
+	check(not game.tg.timed.is_empty(), "the follow-up warning exists for the elite")
+	game._kill_enemy(wake, true)
+	check(_tg_desc(game, wake).is_empty(), "killing an elite between its volleys removes the follow-up warning")
+	game.tg.update(0.0)
+	check(game.tg.timed.is_empty(), "and the store drops it")
+	_tg_reset(game)
+
+	# --- Pause, hit-stop, slow motion and leaving the fight ---
+	var clock := _tg_enemy(game, "aimed", Vector2(300, 420))
+	game._update_enemies(STEP)
+	game._update_enemies(0.1)
+	var t_before: float = float(clock.tell)
+	var k_before: float = float(_tg_desc(game, clock).k)
+	game.hitstop = 0.2
+	game._tick(STEP)
+	check(is_equal_approx(float(clock.tell), t_before) and is_equal_approx(float(_tg_desc(game, clock).k), k_before), "hit-stop freezes the warning together with the tell")
+	game.hitstop = 0.0
+	game.time_scale = 0.3
+	var expected_dt: float = STEP * move_toward(0.3, 1.0, STEP * 1.6)
+	game._tick(STEP)
+	check(absf((t_before - float(clock.tell)) - expected_dt) < 1e-4 and absf(float(_tg_desc(game, clock).k) - (1.0 - float(clock.tell) / float(clock.tell_max))) < 1e-5, "slow motion advances the warning by exactly the scaled time the tell used")
+	game.time_scale = 1.0
+	var paused_tell: float = float(clock.tell)
+	game.set_paused(true)
+	game._process(STEP)
+	check(float(clock.tell) == paused_tell and not _tg_desc(game, clock).is_empty() and is_equal_approx(float(_tg_desc(game, clock).k), 1.0 - paused_tell / float(clock.tell_max)), "pausing holds the warning exactly where it was")
+	game.phase = game.Phase.PLAYING
+	game.phase = game.Phase.CLEAR
+	game.tg.add("curtain_row", 0.0, 1.0, {"gap": 300.0, "hue": "warn", "list": [300.0]})
+	check(_tg_desc(game, clock).is_empty() and game.tg.timed.is_empty(), "leaving the fight clears every warning")
+	game.phase = game.Phase.PLAYING
+	_tg_reset(game)
+
+	# --- Several enemies at once stay readable, and the store has hard limits ---
+	var kinds := ["aimed", "twin", "fan", "lance", "bomb", "broadside"]
+	var crowd: Array = []
+	for i in range(kinds.size()):
+		crowd.append(_tg_enemy(game, kinds[i], Vector2(70.0 + float(i) * 118.0, 360.0 + float(i % 2) * 120.0)))
+	game._update_enemies(STEP)
+	for i in range(crowd.size()):
+		crowd[i].tell = 0.2 + 0.04 * float(i)
+	game.tg.collect(game)
+	var owners := {}
+	for d in game.tg.shown:
+		owners[int(d.owner.id)] = str(d.kind)
+	check(owners.size() == 6 and game.tg.shown.size() == 6, "six enemies preparing at once: six separate warnings")
+	TgPaintS.build(game.tg.shown, 1.0, game.W, game.H)
+	var busy = TgPaintS.stats()
+	check(int(busy.lines) + int(busy.arcs) < 330 and int(busy.glows) <= TgPaintS.MAX_GLOWS, "and together they stay light (%d lines, %d arcs, %d glows)" % [busy.lines, busy.arcs, busy.glows])
+	_tg_reset(game)
+	var many: Array = []
+	for i in range(16):
+		many.append(_tg_enemy(game, "aimed", Vector2(40.0 + float(i) * 40.0, 300.0)))
+	game._update_enemies(STEP)
+	for i in range(many.size()):
+		many[i].tell = 0.29 - 0.015 * float(i)
+	game.tg.collect(game)
+	var kept_min := 2.0
+	var dropped_max := -1.0
+	var kept_ids := {}
+	for d in game.tg.shown:
+		kept_min = minf(kept_min, float(d.k))
+		kept_ids[int(d.owner.id)] = true
+	for m in many:
+		if not kept_ids.has(int(m.id)):
+			dropped_max = maxf(dropped_max, 1.0 - float(m.tell) / float(m.tell_max))
+	check(game.tg.shown.size() == TgS.MAX_ENEMY_SHOWN and kept_min >= dropped_max, "sixteen preparing: at most %d are drawn and they are the ones closest to firing" % TgS.MAX_ENEMY_SHOWN)
+	_tg_reset(game)
+	for i in range(100):
+		game.tg.add("barrage", 0.0, 5.0, {"list": [float(i)]})
+	check(game.tg.timed.size() == TgS.MAX_TIMED and is_equal_approx(float((game.tg.timed[0].data.list as Array)[0]), 100.0 - float(TgS.MAX_TIMED)), "the timed store is capped and drops the oldest first")
+	var flood: Array = []
+	for i in range(200):
+		flood.append({"style": "radial", "hue": "danger", "k": 0.5, "origin": Vector2(300, 300), "centre": Vector2(300, 300), "rays": TgS.radial_rays(Vector2(300, 300), 28), "rl": 200.0})
+		flood.append({"style": "fan", "hue": "warn", "k": 0.5, "origin": Vector2(300, 300), "rays": TgS.fan_rays(Vector2(300, 300), 13), "len": 560.0})
+	TgPaintS.build(flood, 1.0, 720.0, 1280.0)
+	var capped = TgPaintS.stats()
+	check(int(capped.lines) <= TgPaintS.MAX_LINES and int(capped.arcs) <= TgPaintS.MAX_ARCS and int(capped.glows) <= TgPaintS.MAX_GLOWS and int(capped.polys) <= TgPaintS.MAX_POLYS and int(capped.plines) <= TgPaintS.MAX_PLINES and int(capped.segs) <= TgPaintS.MAX_SEGS, "four hundred warnings in one frame still draw within the hard caps (%s)" % str(capped))
+	_tg_reset(game)
+
+	# --- Audio: only the major attacks make a sound ---
+	var audio_node = root.get_node("Audio")
+	audio_node._last.clear()
+	var quiet := _tg_enemy(game, "aimed", Vector2(300, 420))
+	game._update_enemies(STEP)
+	check(not audio_node._last.has("charge") and not audio_node._last.has("warning"), "an ordinary aimed shot has no warning sound")
+	_tg_reset(game)
+	audio_node._last.clear()
+	var loud := _tg_enemy(game, "elite", Vector2(300, 420))
+	game._update_enemies(STEP)
+	check(audio_node._last.has("charge"), "the elite radial attack uses the existing charge sound")
+	_tg_reset(game)
+
+	# --- Accessibility ---
+	var radial := {"style": "radial", "hue": "danger", "k": 0.6, "origin": Vector2(300, 400), "centre": Vector2(300, 400), "rays": TgS.radial_rays(Vector2(300, 400), 14, 0.3), "rl": 230.0}
+	var spiral := {"style": "spiral", "hue": "arc", "k": 0.4, "origin": Vector2(300, 400), "arms": 3, "a0": 1.0, "kk": 0.015}
+	var aimed := {"style": "aimed", "hue": "warn", "k": 0.7, "origin": Vector2(300, 300), "rays": [{"at": Vector2(300, 340), "ang": 1.4}], "len": 700.0}
+	var sample := [radial, spiral, aimed]
+	save.opt.reduced_motion = false
+	save.opt.reduced_flash = false
+	TgPaintS.build(sample, 1.0, game.W, game.H)
+	var moving_a = TgPaintS.l_a.duplicate()
+	var arcs_a = TgPaintS.a_0.duplicate()
+	var lines_normal: int = TgPaintS.l_a.size()
+	TgPaintS.build(sample, 1.37, game.W, game.H)
+	check(moving_a != TgPaintS.l_a or arcs_a != TgPaintS.a_0, "by default the rings turn and the sweeps run")
+	save.opt.reduced_motion = true
+	TgPaintS.build(sample, 1.0, game.W, game.H)
+	var still_a = TgPaintS.l_a.duplicate()
+	var still_arcs = TgPaintS.a_0.duplicate()
+	TgPaintS.build(sample, 1.37, game.W, game.H)
+	check(still_a == TgPaintS.l_a and still_arcs == TgPaintS.a_0, "Reduce Motion: nothing spins or sweeps, the shapes hold still")
+	check(TgPaintS.l_a.size() == lines_normal, "Reduce Motion keeps every line of the warning (%d)" % lines_normal)
+	save.opt.reduced_motion = false
+	TgPaintS.build(sample, 1.0, game.W, game.H)
+	var glow_full := 0.0
+	for c in TgPaintS.g_c:
+		glow_full = maxf(glow_full, c.a)
+	var pulse_moves := absf(TgPaintS._pulse(0.8) - 1.0) > 0.0
+	save.opt.reduced_flash = true
+	TgPaintS.build(sample, 1.0, game.W, game.H)
+	var glow_soft := 0.0
+	for c in TgPaintS.g_c:
+		glow_soft = maxf(glow_soft, c.a)
+	var steady := true
+	for t in [0.1, 0.37, 0.9, 1.4]:
+		TgPaintS.build(sample, t, game.W, game.H)
+		steady = steady and TgPaintS._pulse(0.8) == 1.0
+	check(pulse_moves and steady, "Reduce Flash: the warning pulse is steady instead of flickering")
+	check(glow_soft <= glow_full * 0.5 + 1e-4 and TgPaintS.l_a.size() == lines_normal, "Reduce Flash: glows are at most half as bright and all the geometry is still there")
+	save.opt.reduced_flash = false
+	# Colour blind: a different palette, and every attack type still has its own shape.
+	TgPaintS.build(sample, 1.0, game.W, game.H)
+	var plain_col: Color = TgPaintS._hue("warn", 0.5)
+	save.opt.colorblind = true
+	TgPaintS.build(sample, 1.0, game.W, game.H)
+	check(TgPaintS._hue("warn", 0.5) != plain_col and TgPaintS._hue("safe", 0.5).b > TgPaintS._hue("safe", 0.5).g, "Colour blind mode swaps to a blue and yellow palette")
+	save.opt.colorblind = false
+	var shapes := {}
+	_tg_reset(game)
+	for shot in TG_SHOTS:
+		var s := _tg_enemy(game, shot, Vector2(300, 420))
+		game._update_enemies(STEP)
+		var dsc := _tg_desc(game, s)
+		TgPaintS.build([dsc], 1.0, game.W, game.H)
+		var sig := ""
+		var origin: Vector2 = dsc.origin
+		var sum := 0.0
+		for i in range(TgPaintS.l_a.size()):
+			sum += (TgPaintS.l_a[i] - TgPaintS.l_b[i]).length()
+		sig = "%d/%d/%d/%d/%d" % [TgPaintS.l_a.size(), TgPaintS.a_at.size(), TgPaintS.polys.size(), TgPaintS.plines.size(), int(sum)]
+		shapes[shot] = sig
+		_tg_reset(game)
+	var unique := {}
+	for k in shapes:
+		unique[shapes[k]] = true
+	check(unique.size() == TG_SHOTS.size(), "every enemy attack type has its own shape, not just its own colour (%d distinct)" % unique.size())
+	save.opt = saved_opt
+	game.queue_free()
+	await process_frame
+
+## A game with a boss that has finished entering, the ship parked where the checks expect it.
+func _tg_boss_game(sector: int):
+	var game = await _new_game(_level(sector * 10))
+	game.level.waves[0] = []
+	game.elite_chance = 0.0
+	_step(game, 2.5)
+	var guard := 0
+	while game.boss == null and guard < 400:
+		game.hull = game.max_hull
+		game._process(STEP)
+		guard += 1
+	guard = 0
+	while game.boss != null and game.boss.entering and guard < 700:
+		game.hull = game.max_hull
+		game.invuln = 1.0
+		game._process(STEP)
+		guard += 1
+	game.phase = game.Phase.BOSS
+	game.player_pos = Vector2(300, 1100)
+	game.player_target = game.player_pos
+	_tg_reset(game)
+	return game
+
+## Prepares an attack the way the charge does, takes the warning, fires it, and returns both.
+func _tg_attack(game, boss, name_: String) -> Dictionary:
+	_tg_reset(game)
+	boss.intent = boss.prepare(name_)
+	boss.pending = name_
+	boss.charge = BossS.CHARGE * 0.4
+	game.tg.collect(game)
+	var primary := {}
+	for d in game.tg.shown:
+		if str(d.get("src", "")) == "boss" and str(d.kind) == name_:
+			primary = d
+	var plan: Dictionary = boss.intent
+	var enemies_before: int = game.enemies.size()
+	boss.attack(name_)
+	boss.charge = 0.0
+	game._update_timers(0.001)
+	return {"d": primary, "plan": plan, "bullets": _tg_bullets(game), "born": game.enemies.slice(enemies_before)}
+
+func _tg_names(boss) -> Array:
+	var names := {}
+	var saved = boss.stage
+	for s in range(3):
+		boss.stage = s
+		for n in boss.rotation():
+			names[str(n)] = true
+	if "heads" in boss:
+		# The Hydra's rotation depends on how many heads are left.
+		for alive in [2, 0]:
+			for i in range(boss.heads.size()):
+				boss.heads[i].head.alive = i < alive
+			for n in boss.rotation():
+				names[str(n)] = true
+		for h in boss.heads:
+			h.head.alive = true
+	boss.stage = saved
+	return names.keys()
+
+func _tg_verify(game, boss, name_: String, r: Dictionary) -> void:
+	var d: Dictionary = r.d
+	var label := "%s s%d %s" % [str(boss.def.name), boss.stage, name_]
+	if d.is_empty():
+		check(false, label + ": has a warning")
+		return
+	var plan: Dictionary = r.plan
+	var bullets: Array = r.bullets
+	var W: float = float(game.W)
+	match str(d.style):
+		"fan", "aimed", "volley":
+			if name_ == "fan":
+				var n: int = 9 + boss.stage * 2
+				var orig: Array = []
+				for i in range(n):
+					orig.append({"at": boss.muzzle(), "ang": PI * 0.5 + (float(i) - float(n - 1) * 0.5) * 0.17})
+				check(_tg_match(orig, bullets), label + ": the fan is the original %d shots, 0.17 rad apart" % n)
+			elif name_ == "aimed":
+				var aim: float = (game.player_pos - boss.muzzle()).angle()
+				var orig: Array = []
+				for i in range(3):
+					orig.append({"at": boss.muzzle(), "ang": aim + (float(i) - 1.0) * 0.12})
+				check(_tg_match(orig, bullets), label + ": the aimed volley is the original three shots, 0.12 rad apart")
+			if name_ == "throw":
+				var rays: Array = d.rays
+				var ok: bool = r.born.size() == rays.size() and not rays.is_empty()
+				for i in range(mini(rays.size(), r.born.size())):
+					var born: Dictionary = r.born[i]
+					ok = ok and (born.pos as Vector2).is_equal_approx(rays[i].at) and _tg_ang_eq((born.vel as Vector2).angle(), float(rays[i].ang))
+				check(ok, label + ": the boulders leave from, and along, the warned lines")
+			else:
+				check(_tg_match(d.rays, bullets), label + ": the %d warned rays are exactly the %d shots" % [(d.rays as Array).size(), bullets.size()])
+				if name_ in ["fan", "aimed", "hurl", "shards"]:
+					var base := {"fan": [245.0, BfS.DART, 24.0], "aimed": [305.0, BfS.ORB, 24.0], "hurl": [250.0, BfS.HEAVY, 30.0], "shards": [290.0, BfS.SHARD, 22.0]}[name_] as Array
+					var same := true
+					for b in bullets:
+						same = same and absf(float(b.speed) - boss.speed(float(base[0]))) < 0.05 and int(b.kind) == int(base[1]) and absf(float(b.dmg) - float(base[2])) < 1e-4
+					check(same, label + ": speed, damage and type are unchanged")
+		"burst":
+			var n := int(plan.n)
+			var ok := _tg_match(d.rays, bullets) and int(d.n) == n and bullets.size() == 3
+			check(ok, label + ": the first of %d aimed shots matches its warning" % n)
+			var sequential = game.tg.timed.size() == 1 and (game.tg.timed[0].data.list as Array).size() == n - 1
+			for i in range(1, n):
+				_tg_flush(game, TgS.BURST_GAP)
+				sequential = sequential and game.field.count == 3 * (i + 1) and (game.tg.timed.size() == 0 if i == n - 1 else (game.tg.timed[0].data.list as Array).size() == n - 1 - i)
+			check(sequential, label + ": shots follow one by one, 0.26s apart, and the warning counts them down")
+		"radial":
+			if name_ == "collapse":
+				var shown_kind := ""
+				game.tg.collect(game)
+				for s in game.tg.shown:
+					if str(s.kind) == "collapse":
+						shown_kind = str(s.style)
+				check(shown_kind == "radial" and game.tg.timed.size() == 1, label + ": the rebound is warned for its whole 2s delay")
+				_tg_flush(game, TgS.COLLAPSE_DELAY - 0.002)
+				game.field.clear()
+				_tg_flush(game, 0.01)
+				check(_tg_match(d.rays, _tg_bullets(game)) and game.tg.timed.is_empty(), label + ": the 28 rebound shots match the warning, which then goes")
+			else:
+				check(_tg_match(d.rays, bullets), label + ": the %d radial rays are exactly the shots" % (d.rays as Array).size())
+		"ring_gap":
+			var count := int(plan.count)
+			var step := TAU / float(count)
+			var missing: Array = []
+			for i in range(count):
+				var present := false
+				for b in bullets:
+					present = present or _tg_ang_eq(float(b.ang), float(i) * step)
+				if not present:
+					missing.append(i)
+			missing.sort()
+			var want := [int(plan.gap), (int(plan.gap) + 1) % count]
+			want.sort()
+			var orig: Array = []
+			for i in range(count):
+				if i != int(plan.gap) and i != (int(plan.gap) + 1) % count:
+					orig.append({"at": boss.muzzle(), "ang": float(i) * step})
+			check(_tg_match(orig, bullets), label + ": the ring is the original evenly spaced shots minus the two at the gap")
+			check(_tg_match(d.rays, bullets) and missing == want, label + ": the safe gap shown (shots %s) is the gap fired (%s)" % [str(want), str(missing)])
+			check(_tg_ang_eq(float(d.gap_ang), (float(plan.gap) + 0.5) * step) and bullets.size() == count - 2, label + ": the gap centre and the %d-shot count are right" % (count - 2))
+		"spiral":
+			var kk: float = float(d.kk)
+			check(boss.stream_t > 0.0 and is_equal_approx(boss.stream_angle, float(plan.angle)) and boss.stream_arms == int(d.arms), label + ": the stream starts at the previewed angle with the previewed arms")
+			game.field.clear()
+			boss.stream_gap = 0.0
+			var ticks := 6
+			for i in range(ticks):
+				for j in range(game.field.count):
+					game.field.pos[j] += game.field.vel[j] * 0.11
+				boss._update_stream(0.11)
+				if i == 0:
+					var first_ok = game.field.count == boss.stream_arms
+					for j in range(game.field.count):
+						var matched := false
+						for arm in range(boss.stream_arms):
+							matched = matched or _tg_ang_eq(game.field.vel[j].angle(), float(d.a0) + float(arm) * TAU / float(boss.stream_arms))
+						first_ok = first_ok and matched
+					check(first_ok, label + ": the first shots leave exactly along the previewed arms")
+			var head: float = boss.stream_angle
+			var curve_ok := true
+			var tested := 0
+			for j in range(game.field.count):
+				var off: Vector2 = game.field.pos[j] - boss.muzzle()
+				if off.length() < 5.0:
+					continue
+				var best := 9.0
+				for arm in range(boss.stream_arms):
+					best = minf(best, absf(wrapf(off.angle() - (head + float(arm) * TAU / float(boss.stream_arms) - off.length() * kk), -PI, PI)))
+				curve_ok = curve_ok and best < 0.02
+				tested += 1
+			check(curve_ok and tested > 6, label + ": %d shots in flight lie on the previewed spiral curve" % tested)
+		"curtain":
+			_tg_verify_curtain(game, boss, name_, label, d, plan, bullets)
+		"columns", "rows":
+			var axis := "col" if str(d.style) == "columns" else "row"
+			var spots: Array = d.xs if axis == "col" else d.ys
+			var beams: Array = []
+			for b in game.hazards.beams:
+				if str(b.axis) == axis:
+					beams.append(b)
+			var ok: bool = beams.size() == spots.size() and not spots.is_empty()
+			for i in range(mini(beams.size(), spots.size())):
+				ok = ok and absf(float(beams[i].at) - float(spots[i])) < 0.01 and absf(float(beams[i].w) - float(d.hw)) < 0.01
+			check(ok, label + ": the %d warned %s are the beams that appear (position and width)" % [spots.size(), "columns" if axis == "col" else "rows"])
+		"drops":
+			var xs: Array = plan.xs
+			var ok = game.field.count == 1 and absf(float(game.field.pos[0].x) - float(xs[0])) < 0.01 and (game.tg.timed[0].data.list as Array).size() == xs.size() - 1
+			for i in range(1, xs.size()):
+				_tg_flush(game, TgS.SHELL_GAP)
+				ok = ok and game.field.count == i + 1 and absf(float(game.field.pos[i].x) - float(xs[i])) < 0.01
+			check(ok and game.tg.timed.is_empty(), label + ": the 8 shell columns match the shells, in order, and clear as they fall")
+		"spots":
+			var spots: Array = d.spots
+			var found: Array = game.hazards.wells if spots[0].shape == "well" else game.hazards.zones
+			var ok: bool = found.size() == spots.size()
+			for i in range(mini(found.size(), spots.size())):
+				ok = ok and (found[i].pos as Vector2).is_equal_approx(spots[i].pos)
+				if spots[0].shape != "well":
+					ok = ok and absf(float(found[i].r) - float(spots[i].r)) < 0.01 and str(found[i].kind) == str(spots[i].shape)
+			check(ok, label + ": the %d warned zones are where the zones appear" % spots.size())
+		"hub":
+			var sp: Dictionary = game.hazards.spokes[0] if not game.hazards.spokes.is_empty() else {}
+			check(not sp.is_empty() and _tg_ang_eq(float(sp.angle), float(d.a0)) and signf(float(sp.speed)) == float(d.dir) and int(sp.arms) == int(d.arms), label + ": the spokes start at the warned angle and turn the warned way")
+		"markers":
+			_tg_verify_markers(game, boss, name_, label, d, plan)
+		_:
+			check(false, label + ": unknown warning style " + str(d.style))
+
+func _tg_verify_curtain(game, boss, name_: String, label: String, d: Dictionary, plan: Dictionary, bullets: Array) -> void:
+	var gaps: Array = plan.gaps
+	var W: float = float(game.W)
+	var row_xs := func(list: Array) -> Array:
+		var out: Array = []
+		for b in list:
+			out.append(float(b.at.x))
+		out.sort()
+		return out
+	var want0: Array = TgS.curtain_xs(float(gaps[0]), W)
+	var got0: Array = row_xs.call(bullets)
+	var orig_xs: Array = []
+	var ox := 30.0
+	while ox < W:
+		if absf(ox - float(gaps[0])) > 118.0:
+			orig_xs.append(ox)
+		ox += 58.0
+	check(got0 == want0 and (d.xs as Array) == want0 and got0 == orig_xs, label + ": row 1 has exactly the shots its warning shows, on the original 58px grid with a 118px opening")
+	var open_ok := true
+	for x in got0:
+		open_ok = open_ok and not (float(x) > float(d.open_l) + 0.001 and float(x) < float(d.open_r) - 0.001)
+	check(open_ok and (float(d.open_l) == 0.0 or got0.has(float(d.open_l))) and (float(d.open_r) == W or got0.has(float(d.open_r))), label + ": the opening shown is empty and bounded by real shots")
+	var rows := gaps.size()
+	check(game.tg.timed.size() == rows - 1, label + ": each later row has its own warning (%d)" % (rows - 1))
+	var now := 0.001
+	var rows_ok := true
+	var progress_ok := true
+	for i in range(1, rows):
+		var due = float(i) * TgS.CURTAIN_GAP
+		_tg_flush(game, due - 0.3 - now)
+		now = due - 0.3
+		game.tg.collect(game)
+		var seen := {}
+		for s in game.tg.shown:
+			if str(s.style) == "curtain":
+				seen = s
+		var k_early: float = float(seen.get("k", -1.0))
+		rows_ok = rows_ok and not seen.is_empty() and absf(float(seen.gap) - float(gaps[i])) < 0.001 and (seen.xs as Array) == TgS.curtain_xs(float(gaps[i]), W)
+		game.field.clear()
+		_tg_flush(game, 0.31)
+		now = due + 0.01
+		var fell: Array = row_xs.call(_tg_bullets(game))
+		rows_ok = rows_ok and fell == TgS.curtain_xs(float(gaps[i]), W)
+		game.tg.collect(game)
+		var still := false
+		for s in game.tg.shown:
+			still = still or (str(s.style) == "curtain" and absf(float(s.gap) - float(gaps[i])) < 0.001)
+		progress_ok = progress_ok and not still and k_early > 0.3
+	check(rows_ok, label + ": every row is warned with its own opening, and it falls exactly as shown")
+	check(progress_ok and game.tg.timed.is_empty(), label + ": each row's warning ends the moment its row falls, and none is left over")
+
+func _tg_verify_markers(game, boss, name_: String, label: String, d: Dictionary, plan: Dictionary) -> void:
+	var marks: Array = d.markers
+	var pend: Array = game.pending
+	var W: float = float(game.W)
+	if name_ == "brood":
+		var ok: bool = pend.size() == int(plan.n) and marks.size() == 1
+		for p in pend:
+			ok = ok and absf(float(p.pos.x) - float(plan.origin)) <= 110.001
+		check(ok and absf(float(marks[0].pos.x) - float(plan.origin)) < 0.001, label + ": all %d swarm members enter within the warned area" % pend.size())
+		_tg_flush(game, float(int(plan.n)) * 0.14 + 0.1)
+		check(game.tg.timed.is_empty(), label + ": the marker is gone once the swarm has arrived")
+		return
+	var ok: bool = pend.size() == marks.size() and not marks.is_empty()
+	var longest := 0.0
+	var timed_expected := 0
+	for i in range(mini(pend.size(), marks.size())):
+		var p: Dictionary = pend[i]
+		var m: Dictionary = marks[i]
+		if name_ == "launch":
+			ok = ok and absf(float(p.pos.y) - float(m.pos.y)) < 0.01 and ((float(p.pos.x) < 0.0) == (float(m.pos.x) < W * 0.5))
+		else:
+			ok = ok and absf(float(p.pos.x) - float(m.pos.x)) < 0.01
+		ok = ok and absf(float(p.t) - float(m.delay)) < 0.001
+		longest = maxf(longest, float(m.delay))
+		if float(m.delay) > 0.0:
+			timed_expected += 1
+	check(ok, label + ": the %d arrival markers are where, and when, the group enters" % marks.size())
+	check(game.tg.timed.size() == timed_expected, label + ": a marker stays for each member still to arrive (%d)" % timed_expected)
+	_tg_flush(game, longest + 0.1)
+	check(game.tg.timed.is_empty(), label + ": and each marker is gone once its member has arrived")
+
+func _test_telegraph_bosses() -> void:
+	TgS = load("res://src/combat/telegraph.gd")
+	TgPaintS = load("res://src/combat/telegraph_paint.gd")
+	BfS = load("res://src/combat/bullet_field.gd")
+	BossS = load("res://src/combat/boss_base.gd")
+	var saved_opt = save.opt.duplicate()
+	var covered := 0
+	var excluded: Array = []
+	save.upgrades = {"cannon": 6, "rapid": 6}
+	# Summons are queued in game.pending, which is only advanced in the PLAYING phase, so in a real boss fight they never
+	# arrive and their markers are hidden. Everything else about them is checked here as if they did arrive.
+	var probe = await _tg_boss_game(1)
+	probe.spawn_group({"kind": "mine", "form": "scatter", "count": 2, "delay": 0.0})
+	for i in range(100):
+		probe.hull = probe.max_hull
+		probe.invuln = 1.0
+		probe._process(STEP)
+	var arrive: bool = probe.pending.is_empty()
+	check(arrive == TgS.summons_arrive, "Telegraph.summons_arrive (%s) matches the game: a summon queued in a boss fight %s" % [str(TgS.summons_arrive), "arrives" if arrive else "never arrives (pending is not advanced in the BOSS phase)"])
+	var summon_hidden: bool = not TgS.summons_arrive
+	var hidden_ok := true
+	for name_ in ["rocks", "raiders", "mines"]:
+		_tg_reset(probe)
+		var d: Dictionary = probe.boss.describe(probe.boss.prepare(name_), 0.5)
+		hidden_ok = hidden_ok and (d.is_empty() if summon_hidden else str(d.style) == "markers")
+		probe.boss.attack(name_)
+		hidden_ok = hidden_ok and (probe.tg.timed.is_empty() if summon_hidden else true)
+	check(hidden_ok, "while summons do not arrive, no marker or queued marker announces them")
+	probe.queue_free()
+	await process_frame
+	TgS.summons_arrive = true
+	for sector in range(1, 7):
+		var game = await _tg_boss_game(sector)
+		var boss = game.boss
+		check(boss != null and not boss.entering, "boss %d is out and ready for its attacks" % sector)
+		if boss == null:
+			game.queue_free()
+			continue
+		for s in range(3):
+			boss.stage = s
+			for name_ in _tg_names(boss):
+				if name_ in TG_EXCLUDED:
+					boss.intent = boss.prepare(name_)
+					check(boss.describe(boss.intent, 0.5).is_empty(), "boss %d %s is excluded on purpose: %s" % [sector, name_, TG_EXCLUDED[name_]])
+					if not excluded.has(name_):
+						excluded.append(name_)
+					continue
+				var r := _tg_attack(game, boss, name_)
+				_tg_verify(game, boss, name_, r)
+				covered += 1 if s == 0 else 0
+		boss.stage = 0
+		if sector == 1:
+			# Every shared attack has the right kind of warning.
+			var styles := {"fan": "fan", "aimed": "aimed", "burst": "burst", "ring": "ring_gap", "spiral": "spiral", "curtain": "curtain", "strike": "columns", "rocks": "markers", "raiders": "markers", "mines": "markers"}
+			for name_ in styles:
+				var d: Dictionary = boss.describe(boss.prepare(name_), 0.5)
+				check(str(d.get("style", "")) == styles[name_], "shared attack %s has a %s warning" % [name_, styles[name_]])
+			# Rocks scale with the player count settings; the warning must too.
+			game.count_mult = 1.5
+			var scaled := _tg_attack(game, boss, "rocks")
+			check(game.pending.size() == (scaled.d.markers as Array).size() and game.pending.size() == int(round(4.0 * 1.5)), "group markers follow the same count scaling as the group (%d)" % game.pending.size())
+			game.count_mult = 1.0
+			# The ring's gap is rolled once per charge, with the old odds and counts.
+			var gaps := {}
+			for i in range(60):
+				var p: Dictionary = boss.prepare("ring")
+				gaps[int(p.gap)] = true
+				if int(p.count) != 20 or int(p.gap) < 0 or int(p.gap) >= 20:
+					check(false, "ring plan out of range")
+			check(gaps.size() > 8, "the ring gap is still random (%d distinct positions in 60 charges)" % gaps.size())
+			# A stage change mid-charge re-prepares the plan so counts match the new stage.
+			boss.stage = 0
+			boss.pending = "ring"
+			boss.charge = 0.3
+			boss.intent = boss.prepare("ring")
+			boss.stage = 1
+			boss._stage_up()
+			check(int(boss.intent.count) == 24 and int(boss.intent.stage) == 1, "a stage change mid-charge re-prepares the attack for the new stage")
+			_tg_reset(game)
+			boss.attack("ring")
+			check(game.field.count == 22, "and the ring then fires 24 - 2 shots, as it always did")
+			boss.stage = 0
+			boss.charge = 0.0
+			boss.intent = {}
+		if sector == 6:
+			# Audio: the second, lower tone is only for the most dangerous attacks. Boss order is ring, strike, wells, spiral.
+			var audio_node = root.get_node("Audio")
+			boss.stage = 0
+			var tones := {}
+			for want in [["ring", 0], ["strike", 1], ["wells", 2], ["spiral", 3]]:
+				_tg_reset(game)
+				audio_node._last.clear()
+				boss.charge = 0.0
+				boss.attack_t = 0.0
+				boss.order = int(want[1])
+				boss.update(STEP)
+				tones[want[0]] = [boss.pending, audio_node._last.has("charge"), audio_node._last.has("warning")]
+			check(tones.ring == ["ring", true, true] and tones.strike == ["strike", true, true], "Core: ring and strike play the charge sound and the lower warning tone")
+			check(tones.wells == ["wells", true, false] and tones.spiral == ["spiral", true, false], "and ordinary attacks keep only the charge sound they always had")
+			boss.charge = 0.0
+			boss.intent = {}
+		if sector == 5:
+			# Turrets: warned for the last 0.45s of their wait, aimed where the shot will go.
+			_tg_reset(game)
+			boss.stage = 0
+			boss.turret_fire = 0.3
+			game.tg.collect(game)
+			var turrets := 0
+			var aim_ok := true
+			for d in game.tg.shown:
+				if str(d.kind) == "turret":
+					turrets += 1
+					aim_ok = aim_ok and _tg_ang_eq(float(d.rays[0].ang), (game.player_pos - (d.origin as Vector2)).angle())
+			check(turrets == 4 and aim_ok, "Admiral: all four turrets warn, aimed at the ship")
+			boss.turret_fire = 0.0001
+			var alive_turrets := 0
+			for p in boss.turrets:
+				alive_turrets += 1 if p.alive else 0
+			boss.tick(0.01)
+			var shots := _tg_bullets(game)
+			check(shots.size() == alive_turrets, "and they fire when the timer ends")
+			boss.turret_fire = 3.0
+			game.tg.collect(game)
+			var calm_turret := true
+			for d in game.tg.shown:
+				calm_turret = calm_turret and str(d.kind) != "turret"
+			check(calm_turret, "and show nothing while they wait")
+		if sector == 3:
+			_tg_reset(game)
+			boss.stage = 0
+			for h in boss.heads:
+				h.fire = 0.2
+			game.tg.collect(game)
+			var heads := 0
+			var rays_ok := true
+			for d in game.tg.shown:
+				if str(d.kind) == "spit":
+					heads += 1
+					var head_pos: Vector2 = (d.origin as Vector2)
+					rays_ok = rays_ok and (d.rays as Array).size() == 3 and _tg_ang_eq(float(d.rays[1].ang), (game.player_pos - head_pos).angle())
+			check(heads == 3 and rays_ok, "Hydra: each head warns before it spits, aimed at the ship")
+			var seen: Array = []
+			for d in game.tg.shown:
+				if str(d.kind) == "spit":
+					seen.append(d.rays)
+			boss._spit(boss.heads[0].head)
+			check(_tg_match(seen[0], _tg_bullets(game)), "and the spit follows its warning")
+		game.queue_free()
+		await process_frame
+	check(covered >= 36, "%d boss attacks were each checked against what they fired" % covered)
+	check(excluded.size() == TG_EXCLUDED.size(), "every excluded attack was audited (%s)" % str(excluded))
+
+	# --- Charge timing, warning life cycle and boss death ---
+	var game = await _tg_boss_game(2)
+	var boss = game.boss
+	boss.attack_t = 0.0
+	boss.charge = 0.0
+	boss.intent = {}
+	boss.update(STEP)
+	var started: bool = boss.charge > 0.0 and not boss.intent.is_empty()
+	var frames := 1
+	var kinds_ok := true
+	var rising := true
+	var last_k := -1.0
+	while not boss.intent.is_empty() and frames < 60:
+		game.tg.collect(game)
+		var mine: Dictionary = {}
+		for d in game.tg.shown:
+			if str(d.get("src", "")) == "boss" and str(d.kind) == boss.pending:
+				mine = d
+		kinds_ok = kinds_ok and not mine.is_empty()
+		rising = rising and float(mine.get("k", 0.0)) >= last_k
+		last_k = float(mine.get("k", 0.0))
+		boss.update(STEP)
+		frames += 1
+	check(started and kinds_ok and rising and last_k > 0.8, "the boss warning begins with the charge and rises to nearly 1 (%.2f)" % last_k)
+	check(frames == int(ceil(BossS.CHARGE / STEP - 1e-9)), "the warning adds no delay: the attack still fires after %d frames (0.55s charge)" % frames)
+	game.tg.collect(game)
+	var leftover := false
+	for d in game.tg.shown:
+		leftover = leftover or (str(d.get("src", "")) == "boss" and str(d.kind) == boss.pending and str(d.get("style", "")) != "")
+	# (a curtain's later rows legitimately outlive the charge; every other attack must be gone)
+	check(not leftover or boss.pending in ["curtain", "burst"], "nothing from the charge lingers once the attack has fired")
+	# Dying: nothing warns, nothing fires.
+	_tg_reset(game)
+	boss.attack_t = 0.0
+	boss.charge = 0.0
+	boss.update(STEP)
+	boss.update(STEP)
+	check(boss.charge > 0.0 and not boss.intent.is_empty(), "a charge is in progress")
+	game.tg.add("barrage", 0.0, 3.0, {"list": [1.0, 2.0]})
+	boss._begin_death()
+	game.tg.collect(game)
+	check(game.tg.shown.is_empty() and game.tg.timed.is_empty() and boss.intent.is_empty(), "a boss that starts dying drops its warning, its queued warnings and its intent at once")
+	for i in range(40):
+		boss.update(STEP)
+		game.tg.collect(game)
+	check(game.tg.shown.is_empty() and game.field.count == 0, "and a dying boss produces no further warnings or shots")
+	game.queue_free()
+	await process_frame
+	TgS.summons_arrive = false
+	save.upgrades = {}
+	save.opt = saved_opt
+	print("telegraphs ok")
 
 func engine_peak_reference(EngineS) -> float:
 	# What a ship flat out would show with Reduce Motion off: the calm one must be below it.
