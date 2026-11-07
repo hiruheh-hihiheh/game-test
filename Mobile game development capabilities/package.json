@@ -1,18 +1,13 @@
 {
-  "name": "game-bullet-hell",
+  "name": "starfall-salvage",
   "private": true,
   "type": "module",
+  "description": "Starfall Salvage (Godot 4.7). Run these from this folder. `test` needs the Godot executable on PATH as `godot`; the generators need only Node.js and overwrite files under assets/.",
   "scripts": {
-    "export": "mkdir -p dist && godot --headless --path . --export-release Web dist/index.html",
-    "verify-export": "node scripts/check-exported-pack.mjs",
-    "check": "node scripts/manus/runtime-command.cjs ./verify.mjs",
-    "test": "node --test test/english-copy.test.mjs && node scripts/check-game.mjs",
-    "dev": "node scripts/manus/runtime-command.cjs ./server.mjs",
-    "build": "node scripts/manus/runtime-command.cjs ./build.mjs",
-    "preview:build": "node scripts/manus/runtime-command.cjs ./preview-build.mjs",
-    "preview:status": "node scripts/manus/runtime-command.cjs ./preview-build.mjs --status",
-    "doctor": "node scripts/manus/runtime-command.cjs ./doctor.mjs",
-    "inspect": "node scripts/manus/runtime-command.cjs ./inspect-file.mjs",
-    "assets:report": "node scripts/manus/runtime-command.cjs ./asset-provenance.mjs"
+    "test": "godot --headless --path . --script tools/test_game.gd -- --test --quick",
+    "gen:art": "node tools/gen_art.mjs",
+    "gen:audio": "node tools/gen_audio.mjs",
+    "gen:font": "node tools/gen_font.mjs",
+    "gen:backgrounds": "node tools/gen_backgrounds.mjs"
   }
 }
