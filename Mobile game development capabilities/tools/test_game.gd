@@ -3840,9 +3840,16 @@ func _test_combat_polish() -> void:
 		fx.impact(Vector2(100, 100), "missile", 1.0)
 		fx.shield_break(Vector2(100, 100), 80.0, Color.CYAN)
 	var l := _fx_lists(fx)
-	check(fx.spark_count <= FxS.MAX_SPARKS and l.booms <= FxS.MAX_BOOMS and l.rings <= FxS.MAX_RINGS and l.flashes <= FxS.MAX_FLASHES and l.debris <= FxS.MAX_DEBRIS and fx._scheduled.size() <= FxS.MAX_SCHEDULED, "300 simultaneous explosions stay inside every cap (%s)" % str(l))
+	check(fx.spark_count <= FxS.MAX_SPARKS and l.booms <= FxS.MAX_BOOMS and l.rings <= FxS.MAX_RINGS and l.flashes <= FxS.MAX_FLASHES and l.debris <= FxS.MAX_DEBRIS and l.bolts <= FxS.MAX_BOLTS and l.ripples <= FxS.MAX_RIPPLES and fx._scheduled.size() <= FxS.MAX_SCHEDULED, "300 simultaneous explosions stay inside every cap (%s)" % str(l))
 	_fx_settle(fx, 10.0)
 	check(fx.live_count() == 0, "and every effect is gone afterwards (%d left)" % fx.live_count())
+	# Bolts have their own cap, and the oldest is the one that goes.
+	fx = FxS.new()
+	for i in range(100):
+		fx.bolt(Vector2(i, 0), Vector2(i, 100), Color(float(i) / 100.0, 0.0, 0.0))
+	check(fx.bolts.size() == FxS.MAX_BOLTS and float(((fx.bolts[0] as Dictionary).color as Color).r) > 0.8, "100 lightning bolts keep only the newest %d" % FxS.MAX_BOLTS)
+	_fx_settle(fx, 1.0)
+	check(fx.bolts.is_empty(), "and bolts expire")
 
 	# --- Boss destruction ---
 	fx = FxS.new()
@@ -4024,6 +4031,26 @@ func _test_combat_polish() -> void:
 		game.fx.flashes.clear()
 		game._kill_enemy(e, true)
 		check(game.fx.flashes.size() + game.fx.booms.size() > 0, "%s explodes" % kind)
+	# A mine is heard once: its own blast, not the generic small explosion as well. Other small enemies still use the generic one.
+	var audio_node = root.get_node("Audio")
+	for kind in ["mine", "raider"]:
+		for i in range(audio_node.POOL_SIZE):
+			audio_node._pool[i].stop()
+		audio_node._last.clear()
+		var sound_target: Dictionary = game.spawn_enemy({"kind": kind, "pos": Vector2(360, 400), "move": "straight", "vel": Vector2.ZERO})
+		game._kill_enemy(sound_target, true)
+		var heard := {}
+		for i in range(audio_node.POOL_SIZE):
+			if audio_node._pool[i].playing and audio_node._pool_group[i] == "explosion":
+				for sound_name in ["explode_s", "explode_m", "explode_heavy"]:
+					if audio_node._pool[i].stream == audio_node._streams[sound_name]:
+						heard[sound_name] = int(heard.get(sound_name, 0)) + 1
+		if kind == "mine":
+			check(heard == {"explode_m": 1}, "a mine dying makes one explosion sound, its own (%s)" % str(heard))
+		else:
+			check(heard == {"explode_s": 1}, "a small enemy dying makes one small explosion sound (%s)" % str(heard))
+	for i in range(audio_node.POOL_SIZE):
+		audio_node._pool[i].stop()
 	game.fx.update(20.0)
 	for i in range(30):
 		game.spawn_enemy({"kind": ["gunship", "frigate", "fighter", "elite", "rock_l"][i % 5], "pos": Vector2(randf() * 600.0 + 60.0, randf() * 500.0 + 100.0), "move": "straight", "vel": Vector2.ZERO})

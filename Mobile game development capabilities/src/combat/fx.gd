@@ -18,6 +18,7 @@ const MAX_RIPPLES := 24
 const MAX_SCHEDULED := 48
 const MAX_BOOMS := 60
 const MAX_RINGS := 60
+const MAX_BOLTS := 16
 ## Weapon impact effects allowed per second. A screen full of shots then costs the same as a busy one.
 const IMPACT_RATE := 150.0
 const IMPACT_BURST := 14.0
@@ -153,6 +154,8 @@ func ring(at: Vector2, life: float, r0: float, r1: float, color: Color, width: f
 	rings.append({"pos": at, "life": life, "max": life, "r0": r0, "r1": r1, "color": color, "width": width, "thick": width / maxf(maxf(r0, r1), 1.0) > 0.05})
 
 func bolt(a: Vector2, b: Vector2, color: Color) -> void:
+	if bolts.size() >= MAX_BOLTS:
+		bolts.remove_at(0)  # same policy as every other list: the oldest goes first
 	var pts := PackedVector2Array()
 	var steps := 6
 	for i in range(steps + 1):

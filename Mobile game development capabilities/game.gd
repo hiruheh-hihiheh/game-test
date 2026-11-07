@@ -1701,6 +1701,8 @@ func _destruction_fx(e: Dictionary, pos: Vector2, size: float) -> void:
 	elif kind in ["husk", "revenant", "sentinel"]:
 		palette = "ice"
 		Audio.play("ice", -5.0, 1.0, 0.15)
+	elif kind == "mine":
+		pass  # silent here: _kill_enemy plays the mine's own blast with its burst of bullets, so it is heard once
 	else:
 		CombatAudio.explosion(tier, size)
 	fx.explode(pos, tier, size, palette)
