@@ -311,6 +311,16 @@ static func text(ci: CanvasItem, value: String, pos: Vector2, size: int, color: 
 		at.x -= w * (0.5 if align == CENTER else 1.0)
 	ci.draw_string(font, at, value, HORIZONTAL_ALIGNMENT_LEFT, -1, size, color)
 
+## 14850 -> "14,850".
+static func num(value: int) -> String:
+	var digits := str(absi(value))
+	var out := ""
+	for i in range(digits.length()):
+		if i > 0 and (digits.length() - i) % 3 == 0:
+			out += ","
+		out += digits[i]
+	return ("-" + out) if value < 0 else out
+
 static func width_of(value: String, size: int, bold := false) -> float:
 	var font: Font = BOLD if bold else FONT
 	return font.get_string_size(value, HORIZONTAL_ALIGNMENT_LEFT, -1, size).x

@@ -84,6 +84,7 @@ func _run() -> void:
 	await _test_tiers_and_rift()
 	await _test_danger()
 	await _test_glass_ui()
+	await _test_pilot_profile()
 	await _test_glass_hud()
 	await _test_touch_targets()
 	await _test_expedition()
@@ -960,6 +961,10 @@ func _collect_targets() -> Array:
 	for i in range(4):
 		await process_frame
 	await scrolled.call("settings", [0, 500, 1000, 1500])
+	menu.go("profile")
+	for i in range(5):
+		await process_frame
+	await scrolled.call("profile", [0, 700, 1400, 2100])
 	save.map_sector = 3
 	menu.go("map")
 	for i in range(4):
@@ -1377,6 +1382,322 @@ func _test_glass_hud() -> void:
 	save.opt.colorblind = false
 	save.apply_display()
 	print("glass hud ok")
+
+## The Pilot Profile: the numbers behind it (Pilot is the single source), the page itself (read back from what it
+## really painted), the chip that opens it, rewards that match what grant() pays, and the comfort settings.
+func _test_pilot_profile() -> void:
+	var P = load("res://src/data/pilot.gd")
+	var U = load("res://src/ui.gd")
+	var rarity_rare: int = gear_db.RARE
+	var rarity_epic: int = gear_db.EPIC
+	# --- The XP curve is untouched ---
+	check(P.need(1) == 125 and P.need(12) == 400 and P.need(100) == 2600, "the XP curve is unchanged")
+	check(P.xp_at_level_start(1) == 0 and P.xp_at_level_start(5) == 125 + 150 + 175 + 200, "XP at the start of a level adds up the curve")
+	for lv in [1, 2, 5, 12, 40, 100, 150]:
+		var start: int = P.xp_at_level_start(lv)
+		check(int(P.level_of(start).level) == lv and int(P.level_of(start).into) == 0, "level %d starts at its XP total" % lv)
+		check(int(P.level_of(start + P.need(lv) - 1).level) == lv and int(P.level_of(start + P.need(lv)).level) == lv + 1, "level %d ends one XP before the next" % lv)
+	# --- What a level pays ---
+	var r13: Dictionary = P.reward_for(13)
+	check(int(r13.salvage) == 72 and int(r13.parts) == 11 and int(r13.gear) == -1, "level 13 pays 72 salvage, 11 parts and no gear")
+	check(int(P.reward_for(12).parts) == 11 and int(P.reward_for(11).parts) == 10, "parts use the same whole-number halving as before")
+	check(int(P.reward_for(5).gear) == rarity_rare and int(P.reward_for(10).gear) == rarity_epic and int(P.reward_for(15).gear) == rarity_rare and int(P.reward_for(20).gear) == rarity_epic, "gear comes every fifth level: Rare, and Epic on every tenth")
+	check(int(P.reward_for(7).gear) == -1 and int(P.reward_for(101).gear) == -1 and int(P.reward_for(105).gear) == rarity_rare, "other levels, including past 100, follow the same rule")
+	check(int(P.next_gear_level(12).level) == 15 and int(P.next_gear_level(12).rarity) == rarity_rare and int(P.next_gear_level(15).level) == 20 and int(P.next_gear_level(15).rarity) == rarity_epic, "the next gear levels after 12 and 15")
+	# --- Permanent bonuses ---
+	check(is_equal_approx(P.dmg_bonus_at(1), 1.003) and is_equal_approx(P.dmg_bonus_at(50), 1.15) and is_equal_approx(P.dmg_bonus_at(100), 1.3), "damage bonus is +0.3% a level")
+	check(is_equal_approx(P.dmg_bonus_at(150), 1.3) and is_equal_approx(P.shield_bonus_at(100), 50.0) and is_equal_approx(P.shield_bonus_at(250), 50.0), "both bonuses stop at level 100")
+	for lv in [1, 12, 99, 100, 101, 140]:
+		save.pilot_xp = P.xp_at_level_start(lv)
+		check(is_equal_approx(P.dmg_bonus(), P.dmg_bonus_at(lv)) and is_equal_approx(P.shield_bonus(), P.shield_bonus_at(lv)), "combat uses the same bonuses at level %d" % lv)
+	var g99: Dictionary = P.bonus_gain(99)
+	var g100: Dictionary = P.bonus_gain(100)
+	var g101: Dictionary = P.bonus_gain(101)
+	check(is_equal_approx(float(g99.dmg), 0.003) and is_equal_approx(float(g99.shield), 0.5) and not bool(g99.maxed), "reaching level 99 still adds bonus")
+	check(is_equal_approx(float(g100.dmg), 0.003) and is_equal_approx(float(g100.shield), 0.5) and not bool(g100.maxed), "reaching level 100 adds the last of the bonus")
+	check(is_zero_approx(float(g101.dmg)) and is_zero_approx(float(g101.shield)) and bool(g101.maxed), "reaching level 101 adds nothing: maxed")
+	# --- Milestones are relative to the current level ---
+	var ms: Array = load("res://src/menus/menu_profile.gd").new(null).milestones(12)
+	var got: Array = []
+	for item in ms:
+		got.append([str(item.kind), int(item.level)])
+	check(got == [["next", 13], ["gear", 15], ["gear", 20], ["gear", 25], ["cap", 100]], "milestones from level 12 (%s)" % str(got))
+	check(int(ms[1].rarity) == rarity_rare and int(ms[2].rarity) == rarity_epic and int(ms[3].rarity) == rarity_rare, "and their rarities")
+	for lv in [1, 4, 9, 12, 24, 98, 99, 100, 101, 250]:
+		var list: Array = load("res://src/menus/menu_profile.gd").new(null).milestones(lv)
+		var levels: Array = []
+		var past := false
+		for item in list:
+			levels.append(int(item.level))
+			if int(item.level) <= lv:
+				past = true
+		check(not past, "no milestone at or below level %d is offered as upcoming %s" % [lv, str(levels)])
+		var dup := {}
+		for lvl in levels:
+			check(not dup.has(lvl), "milestone levels are not repeated from level %d" % lv)
+			dup[lvl] = true
+		var at_cap := 0
+		for item in list:
+			if int(item.level) == P.BONUS_CAP:
+				at_cap += 1
+		check(at_cap == (1 if lv < P.BONUS_CAP else 0), "level 100 is listed exactly once while it is ahead, and never after (level %d)" % lv)
+
+	# --- grant() pays exactly what the preview promises, across several levels at once ---
+	# (the pilot-level achievements pay salvage too, so they are marked as already earned)
+	save.achievements = {"pilot_10": true, "pilot_50": true}
+	for case in [[1, 600], [3, 1300], [4, 3000], [9, 200], [98, 9000], [100, 4000]]:
+		save.pilot_xp = P.xp_at_level_start(int(case[0]))
+		var salvage_before: int = save.salvage
+		var parts_before: int = save.parts
+		var gear_before: int = save.gear.size()
+		var result: Dictionary = P.grant(int(case[1]))
+		var after_level: int = int(P.level_of(save.pilot_xp).level)
+		var want_salvage := 0
+		var want_parts := 0
+		var want_gear: Array = []
+		for lv in range(int(case[0]) + 1, after_level + 1):
+			var pay: Dictionary = P.reward_for(lv)
+			want_salvage += int(pay.salvage)
+			want_parts += int(pay.parts)
+			if int(pay.gear) >= 0:
+				want_gear.append(int(pay.gear))
+		check(int(result.levels) == after_level - int(case[0]), "grant counts %d levels gained from level %d" % [int(result.levels), int(case[0])])
+		check(save.salvage - salvage_before == want_salvage and save.parts - parts_before == want_parts, "grant paid the previewed salvage and parts from level %d (%d / %d)" % [int(case[0]), want_salvage, want_parts])
+		check((result.items as Array).size() == want_gear.size() and save.gear.size() - gear_before == want_gear.size(), "grant paid the previewed gear drops from level %d" % int(case[0]))
+		for k in range(want_gear.size()):
+			check(int(result.items[k].rarity) >= want_gear[k], "gear drop %d is at least the previewed rarity" % k)
+		if after_level > int(case[0]):
+			check(str(result.rewards[0].detail) == "+%d salvage  +%d parts" % [want_salvage, want_parts], "the results line matches the preview")
+	save.gear = []
+	save.salvage = 0
+	save.parts = 0
+	save.achievements = {}
+
+	# --- The title chip opens the profile, and Back returns ---
+	save.pilot_xp = P.xp_at_level_start(12) + 260
+	var menu = load("res://title_screen.tscn").instantiate()
+	root.add_child(menu)
+	await process_frame
+	menu.go("title")
+	for i in range(4):
+		await process_frame
+	var chip: Rect2 = menu.ui.rect_of("profile")
+	check(is_equal_approx(chip.size.x, 190.0) and is_equal_approx(chip.size.y, 56.0) and is_equal_approx(chip.position.x, 20.0), "the Pilot chip keeps its size and place (%s)" % str(chip))
+	var settings_rect: Rect2 = menu.ui.rect_of("settings")
+	check(not chip.intersects(settings_rect), "the chip does not run into the settings button")
+	await _press_id(menu.ui, "profile")
+	check(menu.screen == "profile", "touching the Pilot chip opens the profile")
+	for i in range(5):
+		await process_frame
+	check(menu.ui.rect_of("back").size.x >= 80.0, "the profile has a Back button")
+	await _press_id(menu.ui, "back")
+	check(menu.screen == "title", "Back returns to the title screen")
+	for i in range(4):
+		await process_frame
+	check(menu.ui.rect_of("play").size.x > 100.0, "the title screen is back")
+
+	# --- The page shows the real numbers ---
+	var profile = menu.pages.profile
+	profile.capture_text = true
+	var salvage0: int = save.salvage
+	var parts0: int = save.parts
+	var xp0: int = save.pilot_xp
+	var gear0: int = save.gear.size()
+	save.stats = {"kill": 1832, "boss": 9, "clear": 74, "best_combo": 67, "gear_found": 58, "legendary": 3}
+	save.endless_best_wave = 17
+	save.owned_ships = ["nova", "interceptor", "lancer"]
+	save.ship = "interceptor"
+	save.mastery = {"interceptor": 1600}
+	save.achievements = {"first_kill": true, "kill_1k": true, "nova_50": true}
+	for n in range(1, 31):
+		save.star_mask[n] = 7
+	var open_profile := func() -> void:
+		menu.go("profile")
+		for i in range(6):
+			await process_frame
+	await open_profile.call()
+	var seen := func(text: String) -> bool:
+		return text in profile.shown
+	check(seen.call("PILOT LEVEL 12") and seen.call("260 / 400 XP") and seen.call("140 XP TO NEXT LEVEL") and seen.call("65%") and seen.call("LIFETIME XP: %s" % U.num(save.pilot_xp)), "the XP section shows level 12, 260 / 400, 140 to go and 65%%")
+	check(seen.call("NEXT LEVEL — LEVEL 13") and seen.call("+72") and seen.call("+11") and seen.call("+0.3%") and seen.call("+0.5"), "the next-level rewards come from the real next level")
+	check(not _shown_has(profile, "GEAR DROP"), "no gear card when the next level pays no gear")
+	check(seen.call("+3.6%") and seen.call("+6.0") and seen.call("CAP +30.0% AT LEVEL 100") and seen.call("CAP +50.0 AT LEVEL 100"), "the combat attributes show the bonuses combat applies")
+	check(seen.call("1,832") and seen.call("9") and seen.call("67") and seen.call("74") and seen.call("30 / 90".replace("30 / 90", "%d / %d" % [save.total_stars(), Levels.LEVEL_COUNT * 3])) and seen.call("17") and seen.call("58") and seen.call("3 / 5"), "the career statistics show the saved values")
+	check(seen.call("%d / %d" % [save.achievements.size(), Goals.ACHIEVEMENTS.size()]), "the achievements count is real")
+	check(seen.call("INTERCEPTOR") and seen.call("MASTERY 3") and seen.call("MASTERY 3 / 10"), "the current ship and its mastery are shown")
+	var shown_levels: Array = []
+	for line in profile.shown:
+		if str(line).begins_with("LEVEL ") and "·" in str(line):
+			shown_levels.append(str(line))
+	check(seen.call("LEVEL 15  ·  RARE GEAR") and seen.call("LEVEL 20  ·  EPIC GEAR") and seen.call("LEVEL 25  ·  RARE GEAR") and seen.call("LEVEL 100  ·  BONUSES MAXED"), "the roadmap lists the next milestones (%s)" % str(shown_levels))
+	check(seen.call("LEVEL 13  ·  NEXT LEVEL"), "and the next level first")
+	# XP start, middle and end of a level.
+	var xp_cases := [[0, "0 / 400 XP", "400 XP TO NEXT LEVEL", "0%"], [200, "200 / 400 XP", "200 XP TO NEXT LEVEL", "50%"], [399, "399 / 400 XP", "1 XP TO NEXT LEVEL", "99%"]]
+	for case in xp_cases:
+		save.pilot_xp = P.xp_at_level_start(12) + int(case[0])
+		for i in range(3):
+			await process_frame
+		check(seen.call("PILOT LEVEL 12") and seen.call(str(case[1])) and seen.call(str(case[2])) and seen.call(str(case[3])), "XP %d of 400 shows %s, %s, %s" % [int(case[0]), str(case[1]), str(case[2]), str(case[3])])
+	# Gear milestones: Rare at 5, Epic at 10.
+	save.pilot_xp = P.xp_at_level_start(4) + 10
+	for i in range(3):
+		await process_frame
+	check(seen.call("RARE GEAR DROP") and seen.call("Guaranteed on level 5.") and seen.call("+40") and seen.call("+7"), "level 5 previews a Rare gear drop with 40 salvage and 7 parts")
+	save.pilot_xp = P.xp_at_level_start(9) + 10
+	for i in range(3):
+		await process_frame
+	check(seen.call("EPIC GEAR DROP") and seen.call("Guaranteed on level 10.") and seen.call("+60") and seen.call("+10"), "level 10 previews an Epic gear drop with 60 salvage and 10 parts")
+	# Level 99, 100 and past it.
+	save.pilot_xp = P.xp_at_level_start(99) + 5
+	for i in range(3):
+		await process_frame
+	check(seen.call("NEXT LEVEL — LEVEL 100") and seen.call("+0.3%") and not seen.call("MAXED") and seen.call("+29.7%") and seen.call("LEVEL 99 / 100") and seen.call("EPIC GEAR DROP"), "level 99 still previews the last bonus increase, and the level-100 Epic")
+	save.pilot_xp = P.xp_at_level_start(100) + 5
+	for i in range(3):
+		await process_frame
+	check(seen.call("NEXT LEVEL — LEVEL 101") and seen.call("MAXED") and not seen.call("+0.3%") and seen.call("+30.0%") and seen.call("+50.0") and seen.call("LEVEL 100  ·  BONUSES MAXED  ·  COMPLETE"), "level 100 shows the bonuses maxed and the milestone complete")
+	check(not seen.call("LEVEL 100  ·  BONUSES MAXED"), "a reached milestone is not offered as upcoming")
+	save.pilot_xp = P.xp_at_level_start(150) + 5
+	for i in range(3):
+		await process_frame
+	check(seen.call("PILOT LEVEL 150") and seen.call("+30.0%") and seen.call("NEXT LEVEL — LEVEL 151") and seen.call("MAXED") and seen.call("NO LEVEL CAP"), "past level 100 the page keeps going with the bonuses capped")
+	check(save.salvage == salvage0 and save.parts == parts0 and save.gear.size() == gear0, "opening and reading the profile pays nothing")
+
+	# --- Levelling up in a real flight updates the page, and pays what the preview said ---
+	menu.queue_free()
+	await process_frame
+	save.pilot_xp = P.xp_at_level_start(3)
+	save.salvage = 0
+	save.parts = 0
+	save.gear = []
+	var game = await _new_game(_level(3))
+	game.phase = game.Phase.PLAYING
+	game.kills = 1200
+	game._level_complete()
+	var before: int = int(game.pilot_before.level)
+	var after: int = int(game.pilot_after.level)
+	check(before == 3 and after >= before + 3, "one flight can gain several levels (%d to %d)" % [before, after])
+	var pay_salvage := 0
+	var pay_parts := 0
+	var pay_gear := 0
+	for lv in range(before + 1, after + 1):
+		var pay2: Dictionary = P.reward_for(lv)
+		pay_salvage += int(pay2.salvage)
+		pay_parts += int(pay2.parts)
+		if int(pay2.gear) >= 0:
+			pay_gear += 1
+	var line_ok := false
+	for r in game.rewards:
+		if str(r.detail) == "+%d salvage  +%d parts" % [pay_salvage, pay_parts]:
+			line_ok = true
+	check(line_ok, "the results line pays exactly the previewed salvage and parts for levels %d to %d" % [before + 1, after])
+	var pilot_items := 0
+	for it in game.loot:
+		if int(it.get("power", 0)) >= 1 and bool(it.get("new", false)):
+			pilot_items += 1
+	check(pilot_items >= pay_gear and pay_gear >= 1, "and the previewed gear drop arrived (%d of %d)" % [pilot_items, pay_gear])
+	var salvage_now: int = save.salvage
+	var xp_now: int = save.pilot_xp
+	game._bank()
+	check(save.salvage == salvage_now and save.pilot_xp == xp_now, "a flight pays its levels only once")
+	game.queue_free()
+	await process_frame
+	menu = load("res://title_screen.tscn").instantiate()
+	root.add_child(menu)
+	await process_frame
+	menu.pages.profile.capture_text = true
+	menu.go("profile")
+	for i in range(6):
+		await process_frame
+	var next_pay: Dictionary = P.reward_for(after + 1)
+	check(("PILOT LEVEL %d" % after) in menu.pages.profile.shown and ("NEXT LEVEL — LEVEL %d" % (after + 1)) in menu.pages.profile.shown and ("+%s" % U.num(int(next_pay.salvage))) in menu.pages.profile.shown, "after the flight the profile shows the new level and the next one's rewards")
+	check(int(menu.pages.profile.summary().level) == after, "the profile's level matches the save")
+
+	# --- Hangar button, scrolling and touch targets ---
+	check(menu.ui.scroll_max > 400.0, "the profile scrolls (%.0f)" % menu.ui.scroll_max)
+	var back_at: Rect2 = menu.ui.rect_of("back")
+	menu.ui.scroll = 700.0
+	for i in range(4):
+		await process_frame
+	check(menu.ui.rect_of("back") == back_at, "the header stays put while the page scrolls")
+	menu.ui.scroll = menu.ui.scroll_max
+	for i in range(4):
+		await process_frame
+	var hangar_btn: Rect2 = menu.ui.rect_of("profile_hangar")
+	check(hangar_btn.size.x >= 150.0 and hangar_btn.end.x <= float(menu.W) and hangar_btn.position.x >= 0.0, "the Hangar button is on screen at the bottom (%s)" % str(hangar_btn))
+	check(hangar_btn.end.y <= float(menu.H) - float(menu.bottom) + 1.0, "and clear of the bottom safe area")
+	await _press_id(menu.ui, "profile_hangar")
+	check(menu.screen == "hangar", "OPEN HANGAR goes to the Hangar")
+	menu.queue_free()
+	await process_frame
+
+	# --- The page under each comfort setting ---
+	for combo in [[true, false, 1.0], [false, true, 1.0], [false, false, 1.12], [true, true, 1.12]]:
+		save.opt.reduced_motion = combo[0]
+		save.opt.reduced_flash = combo[1]
+		save.opt.ui_scale = combo[2]
+		save.apply_display()
+		save.pilot_xp = P.xp_at_level_start(19) + 300
+		menu = load("res://title_screen.tscn").instantiate()
+		root.add_child(menu)
+		await process_frame
+		menu.pages.profile.capture_text = true
+		menu.go("profile")
+		for i in range(6):
+			await process_frame
+		var label := "motion=%s flashes=%s scale=%.2f" % [str(combo[0]), str(combo[1]), combo[2]]
+		check(("PILOT LEVEL 19") in menu.pages.profile.shown and ("EPIC GEAR DROP") in menu.pages.profile.shown and ("LEVEL 25  ·  RARE GEAR") in menu.pages.profile.shown, "the profile shows its data with %s" % label)
+		check(menu.ui.scroll_max > 300.0, "the profile scrolls with %s" % label)
+		var width: float = float(menu.W)
+		var off_screen := 0
+		for step in [0.0, 600.0, 1200.0, 1800.0, 2400.0]:
+			menu.ui.scroll = minf(step, menu.ui.scroll_max)
+			for i in range(3):
+				await process_frame
+			for b in menu.ui._buttons:
+				var br: Rect2 = b.rect
+				if br.position.x < -1.0 or br.end.x > width + 1.0:
+					off_screen += 1
+		check(off_screen == 0, "no control runs off the side with %s" % label)
+		menu.queue_free()
+		await process_frame
+	save.opt.reduced_motion = false
+	save.opt.reduced_flash = false
+	save.opt.ui_scale = 1.0
+	save.apply_display()
+	save.pilot_xp = 0
+	save.stats = {}
+	save.mastery = {}
+	save.star_mask = {}
+	save.achievements = {}
+	save.endless_best_wave = 0
+	save.owned_ships = ["nova"]
+	save.ship = "nova"
+	save.salvage = 0
+	save.parts = 0
+	save.gear = []
+	print("pilot profile ok")
+
+func _shown_has(profile, fragment: String) -> bool:
+	for line in profile.shown:
+		if fragment in str(line):
+			return true
+	return false
+
+## Presses a control with a real touch (down and up) on the layer that owns it.
+func _press_id(ui, id: String) -> void:
+	var rect: Rect2 = ui.rect_of(id)
+	var down := InputEventScreenTouch.new()
+	down.index = 0
+	down.position = rect.get_center()
+	down.pressed = true
+	ui._input(down)
+	var up := InputEventScreenTouch.new()
+	up.index = 0
+	up.position = rect.get_center()
+	up.pressed = false
+	ui._input(up)
+	await process_frame
 
 func _test_gear_data() -> void:
 	var rng := RandomNumberGenerator.new()

@@ -55,6 +55,7 @@ func _ready() -> void:
 	pages = {
 		"map": MenuMap.new(self), "preflight": MenuMap.new(self), "hangar": MenuHangar.new(self),
 		"ops": MenuOps.new(self), "expedition": MenuExpedition.new(self), "settings": MenuSettings.new(self),
+		"profile": MenuProfile.new(self),
 	}
 	pages.preflight = pages.map
 	pages["loadout"] = pages.map
@@ -94,6 +95,9 @@ func _focus_art(page: String) -> void:
 		return # The Hangar chooses by tab.
 	if page in ["preflight", "expedition", "ops"]:
 		UIArt.focus(["danger"])
+		return
+	if page == "profile":
+		UIArt.focus(["loot"])
 		return
 	UIArt.focus([], ["loot"] if page == "title" else [])
 
@@ -180,6 +184,8 @@ func _on_ui(id: String) -> void:
 			go("ops")
 		"settings":
 			go("settings")
+		"profile":
+			go("profile")
 		"expedition":
 			go("expedition")
 		"back":
@@ -257,6 +263,8 @@ func pilot_chip(c: UILayer, x: float, y: float) -> void:
 	var info: Dictionary = Pilot.level_of(Save.pilot_xp)
 	var r := Rect2(x, y, 190, 56)
 	UI.glass(c, r, UI.Kind.CARD, UI.CYAN, {"chamfer": 12})
+	# The whole chip opens the Pilot Profile. It looks exactly as it did.
+	c.hit_area("profile", r)
 	UIArt.draw(c, "rank", r.position + Vector2(27, 20), 26.0, {"animate": false})
 	UI.text(c, "PILOT %d" % int(info.level), r.position + Vector2(48, 25), 20, UI.WHITE, true)
 	UI.bar(c, Rect2(r.position + Vector2(14, 34), Vector2(162, 12)), float(info.into) / float(info.need), UI.CYAN)
