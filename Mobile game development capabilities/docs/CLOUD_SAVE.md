@@ -77,6 +77,20 @@ CHOOSE A SAVE shows both saves (pilot level, salvage, stars, gear, time saved) a
 
 The kept files are never read by the game and never deleted by it (they are for support or a manual recovery).
 
+### Nothing is replaced until its copy is safe
+
+Every action that replaces data first writes the copy that makes it recoverable, **reads that file back and compares it byte for byte**, and only then proceeds. If a copy cannot be written (the file cannot be opened, the write fails, a write stops short, a copy of the save file fails), nothing is replaced, nothing is bound or recorded, the decision stays open, and the profile shows in red "Could not keep a copy of ... Your saves are unchanged. Free some storage space and try again."
+
+| Action | Copy made first |
+|---|---|
+| KEEP THIS DEVICE'S SAVE (replaces the cloud snapshot) | The cloud save **exactly as the cloud sent it** (`.cloudconflict`), whether readable, damaged or written by a newer game. It is never re-encoded. |
+| RESTORE CLOUD SAVE, and the silent restores on a new install or after another device played | This device's save file (`.before_cloud`) and its progress in the cloud format (`.cloudconflict`). A silent restore that cannot make them does not happen: SYNC ERROR, retried later. |
+| Account change: USE THIS DEVICE'S SAVE | The new account's cloud save exactly as sent (`.cloudconflict`), readable or not. The account is bound only after it is written. |
+| Account change: LOAD THIS ACCOUNT'S CLOUD SAVE | This device's save, as for RESTORE. The account is bound only after it is written. |
+| Google reports two versions | Each version exactly (`.cloudconflict.1`, `.2`). Old files from an earlier conflict are removed first, and the message states how many were really written: it says "both versions were kept" only if both were. |
+
+A Google conflict reported while looking at a new account (the probe) is kept the same way and shown on the account screen as CONFLICT. While Google holds two versions for that account, neither USE THIS DEVICE'S SAVE nor LOAD THIS ACCOUNT'S CLOUD SAVE is possible, only PAUSE CLOUD SYNC.
+
 ## 8. Which Google account (data safety)
 
 A cloud save belongs to one Google Play Games player. Without knowing which, switching accounts on a phone could upload one person's progress into another's cloud save, or replace it.
@@ -142,11 +156,12 @@ This order is covered by the stand-in plugin in `tools/fake_pgs`, whose client N
 
 ## 11. What is verified and what is not
 
-Executed (quick suite, `-- --test --quick`): **5572 checks, 0 failures** (the count varies by a few between runs, because some tests loop until a state is reached), including every cloud test below, run on Windows with Godot 4.7.2 headless.
+Executed (quick suite, `-- --test --quick`): **5625 checks, 0 failures** (the count varies by a few between runs, because some tests loop until a state is reached), including every cloud test below, run on Windows with Godot 4.7.2 headless.
 
 - Data: every progress key survives encode, decode and restore; settings are untouched; more than twenty kinds of damaged, foreign, newer or invalid blob are refused; older versions are accepted.
 - `has_progress`: each meaningful field alone, the generated data that must not count, and that every `PROGRESS_KEYS` entry is classified.
 - Sync (mock service): new-install restore, guest upload, fast-forward, lower balances restored as they are, erased saves, offline, failed uploads, timeouts, debounce, flight hold, both conflict choices and their kept files, an unreadable or newer cloud save, Google-reported conflicts from a save and from a load (both versions kept, no timeout wait, no overwrite, no timer retry).
+- Data preservation (mock service, and `tools/faulty_cloud_sync.gd`, which makes file operations fail): unreadable (corrupted) and newer-version cloud data followed by KEEP THIS DEVICE'S SAVE keep the exact original bytes; the same during an account switch; a Google conflict while looking at a new account keeps both versions and blocks replacing; stale conflict files are replaced or removed; a backup that cannot be opened (a directory in its place), a write that fails, and a write that stops short each leave the cloud save and local progress untouched and the decision open; restoring when this device's save cannot be backed up (copy failure, open failure, write failure, short write) does nothing, for the conflict choice, the silent new-install restore and the account choice; the message never claims both Google versions were kept when a write failed. Five deliberate breakages of this code each made the suite fail (done by hand, not part of the suite).
 - Accounts (mock service): A to B with and without a cloud save, each choice and its kept files, pausing, switching back to A, signing out and in as the same account, a switch while a request is pending (late answer ignored), a switch nobody announced, an unknown identity (no sync, nothing recorded), an older sync record without an account.
 - Session cleanup: sign out while a load is pending and while a save is pending, then sign in again; a scheduled retry cancelled by sign-out; a sign-in check that never answers.
 - Plugin adapter (stand-in plugin): availability in six situations, initialize once, clients created after initialization and persistent, sign-in, forced player reload, the snapshot open/save/read-back sequence, a read-back mismatch, conflicts from SAVE and LOAD, exactly-once completion, silence and timeout, late answers, sign-out with a request pending, an empty player id.

@@ -47,11 +47,15 @@ var conflict := {}
 var account_change := {}
 ## Seconds to wait for Google Play Games to answer the sign-in check.
 var auth_timeout := 20.0
+## Why the last decision the player made was not carried out, in plain words ("" when nothing is wrong).
+## Set when a backup copy could not be written: nothing was replaced, and the decision is still open.
+var choice_error := ""
 
 var _account := ""
 var _pending_account := ""
 var _auth_epoch := 0
 var _fail_kind := ""
+var _conflict_info := {}
 var _synced_once := false
 var _has_base := false
 var _base_local := ""
@@ -313,16 +317,18 @@ func _on_loaded(tok: int, r: Dictionary) -> void:
 		else:
 			_finish_ok()
 		return
-	var dec := CloudSave.decode(r.get("bytes", PackedByteArray()))
+	# The bytes exactly as the cloud sent them. They are kept as they are, readable or not, before anything replaces them.
+	var raw: PackedByteArray = r.get("bytes", PackedByteArray())
+	var dec := CloudSave.decode(raw)
 	if not bool(dec.ok):
 		if CloudSave.has_progress(local):
-			_raise_conflict(local, {}, str(dec.error))
+			_raise_conflict(local, {}, str(dec.error), raw)
 		else:
 			_fail("error", str(dec.error) + ". It was not used.")
 		return
-	_decide(local, dec.data)
+	_decide(local, dec.data, raw)
 
-func _decide(local: Dictionary, cloud: Dictionary) -> void:
+func _decide(local: Dictionary, cloud: Dictionary, raw: PackedByteArray) -> void:
 	var lh := CloudSave.progress_hash(local)
 	var ch := CloudSave.progress_hash(cloud)
 	if lh == ch:
@@ -335,9 +341,9 @@ func _decide(local: Dictionary, cloud: Dictionary) -> void:
 		return
 	if not _has_base:
 		if not local_has:
-			_restore(cloud, ch)
+			_restore_silently(cloud, ch)
 		else:
-			_raise_conflict(local, cloud, "")
+			_raise_conflict(local, cloud, "", raw)
 		return
 	var local_changed := lh != _base_local
 	var cloud_changed := ch != _base_cloud
@@ -345,13 +351,13 @@ func _decide(local: Dictionary, cloud: Dictionary) -> void:
 		_finish_ok()
 	elif not cloud_changed:
 		if not local_has and CloudSave.has_progress(cloud):
-			_raise_conflict(local, cloud, "")  # a save that was erased on this device is never pushed silently
+			_raise_conflict(local, cloud, "", raw)  # a save that was erased on this device is never pushed silently
 		else:
 			_upload(local)
 	elif not local_changed:
-		_restore(cloud, ch)
+		_restore_silently(cloud, ch)
 	else:
-		_raise_conflict(local, cloud, "")
+		_raise_conflict(local, cloud, "", raw)
 
 func _upload(local: Dictionary) -> void:
 	var lh := CloudSave.progress_hash(local)
@@ -371,42 +377,110 @@ func _on_uploaded(tok: int, lh: String, r: Dictionary) -> void:
 	_record(lh, lh)
 	_finish_ok()
 
-func _restore(cloud: Dictionary, ch: String) -> void:
+## Replaces this device's progress with `cloud`. Returns false, having changed nothing, when this device's own save
+## could not be copied away first.
+func _restore(cloud: Dictionary, ch: String, backup := true) -> bool:
+	if backup and not _keep_copy_of_local():
+		_backup_failed("this device's save")
+		return false
 	_force_local = false
-	_keep_copy_of_local()
 	_applying = true
 	Save.restore_progress(cloud)
 	_applying = false
 	_record(CloudSave.progress_hash(Save.to_dict()), ch)
 	conflict = {}
+	choice_error = ""
 	restored.emit()
 	_finish_ok()
+	return true
 
-## Before a restore the save file is copied to .before_cloud and the old progress is also kept in the cloud format.
-func _keep_copy_of_local() -> void:
+## A restore nobody was asked about (a new install, or another device played). If the backup cannot be made it does not happen.
+func _restore_silently(cloud: Dictionary, ch: String) -> void:
+	if not _restore(cloud, ch):
+		choice_error = ""
+		_fail("backup", "")
+
+func _backup_failed(what: String) -> void:
+	choice_error = "Could not keep a copy of %s on this device, so nothing was replaced. Your saves are unchanged. Free some storage space and try again." % what
+
+## Before this device's save is replaced it is copied to .before_cloud and also kept in the cloud format as
+## .cloudconflict. True only if both were written and read back identical.
+func _keep_copy_of_local() -> bool:
+	var ok := true
 	if FileAccess.file_exists(Save.path):
-		DirAccess.copy_absolute(Save.path, Save.path + ".before_cloud")
-	_write_blob(Save.path + ".cloudconflict", CloudSave.encode(Save.to_dict()))
+		ok = _copy_file(Save.path, Save.path + ".before_cloud")
+	if ok:
+		ok = _write_blob(Save.path + ".cloudconflict", CloudSave.encode(Save.to_dict()))
+	return ok
 
-func _write_blob(file_path: String, bytes: PackedByteArray) -> void:
-	var f := FileAccess.open(file_path, FileAccess.WRITE)
-	if f != null:
-		f.store_buffer(bytes)
-		f.close()
+## File access is in these three small functions so tests can make each fail.
+func _open_write(file_path: String) -> FileAccess:
+	return FileAccess.open(file_path, FileAccess.WRITE)
 
-func _raise_conflict(local: Dictionary, cloud: Dictionary, bad: String) -> void:
-	conflict = {"local": CloudSave.summarize(local), "cloud": CloudSave.summarize(cloud) if not cloud.is_empty() else {}, "cloud_data": cloud, "bad": bad}
+func _store_bytes(f: FileAccess, _file_path: String, bytes: PackedByteArray) -> bool:
+	f.store_buffer(bytes)
+	return f.get_error() == OK
+
+func _copy_file(from: String, to: String) -> bool:
+	return DirAccess.copy_absolute(from, to) == OK and FileAccess.get_file_as_bytes(to) == FileAccess.get_file_as_bytes(from)
+
+## Writes a file and reads it back. True only if the file now holds exactly `bytes`.
+func _write_blob(file_path: String, bytes: PackedByteArray) -> bool:
+	var f := _open_write(file_path)
+	if f == null:
+		return false
+	var wrote := _store_bytes(f, file_path, bytes)
+	f.close()
+	return wrote and FileAccess.get_file_as_bytes(file_path) == bytes
+
+## Keeps every version Google reported, exactly, in .cloudconflict.1 and .2. Old files from an earlier conflict are
+## removed first so they can never be mistaken for these. Returns {needed, saved}: only written, verified files count.
+func _preserve_candidates(r: Dictionary) -> Dictionary:
+	for suffix in [".cloudconflict.1", ".cloudconflict.2"]:
+		DirAccess.remove_absolute(Save.path + suffix)
+	var needed := 0
+	var saved := 0
+	for c in r.get("candidates", []):
+		var bytes: PackedByteArray = c.get("bytes", PackedByteArray())
+		if bytes.is_empty():
+			continue
+		needed += 1
+		if needed <= 2 and _write_blob(Save.path + ".cloudconflict.%d" % needed, bytes):
+			saved += 1
+	return {"needed": needed, "saved": saved, "origin": str(r.get("origin", ""))}
+
+## What the player is told about a conflict. It claims only what was actually written.
+func _conflict_text(info: Dictionary) -> String:
+	var needed := int(info.get("needed", 0))
+	var saved := int(info.get("saved", 0))
+	var origin := str(info.get("origin", ""))
+	var when := "" if origin == "" else (" while saving" if origin == "SAVE" else " while loading")
+	var head := "Google Play Games reported two different cloud versions of your save%s. This build cannot settle that, so nothing was changed." % when
+	if needed == 0:
+		return head + " No version was returned to keep. Your progress here is untouched."
+	if saved == needed:
+		var kept := "Both versions were" if needed == 2 else ("The version was" if needed == 1 else "The first two versions were")
+		return head + " %s kept on this device, and your progress here is untouched." % kept
+	return head + " Could not keep a copy of %d of the %d versions on this device. Your progress here is untouched." % [needed - saved, needed]
+
+func _raise_conflict(local: Dictionary, cloud: Dictionary, bad: String, raw: PackedByteArray) -> void:
+	choice_error = ""
+	conflict = {"local": CloudSave.summarize(local), "cloud": CloudSave.summarize(cloud) if not cloud.is_empty() else {}, "cloud_data": cloud, "bad": bad, "raw_bytes": raw}
 	busy = false
 	changed.emit()
 	conflict_found.emit()
 
-## The player chose this device's save. The cloud save it replaces is kept in a file here first.
+## The player chose this device's save. The cloud save it replaces, exactly as the cloud sent it, even if it was
+## unreadable, is written to .cloudconflict and read back first. If that fails, nothing is replaced.
 func keep_local() -> void:
 	if conflict.is_empty() or busy or not signed_in():
 		return
-	var cloud: Dictionary = conflict.cloud_data
-	if not cloud.is_empty():
-		_write_blob(Save.path + ".cloudconflict", CloudSave.encode(cloud))
+	var raw: PackedByteArray = conflict.get("raw_bytes", PackedByteArray())
+	if not raw.is_empty() and not _write_blob(Save.path + ".cloudconflict", raw):
+		_backup_failed("the cloud save")
+		changed.emit()
+		return
+	choice_error = ""
 	conflict = {}
 	_force_local = true
 	busy = true
@@ -414,7 +488,7 @@ func keep_local() -> void:
 	_upload(Save.to_dict())
 	changed.emit()
 
-## The player chose the cloud save. This device's save is kept in a file here first.
+## The player chose the cloud save. This device's save is kept in files here first. If that fails, nothing is replaced.
 func restore_cloud() -> void:
 	if conflict.is_empty() or busy:
 		return
@@ -422,14 +496,18 @@ func restore_cloud() -> void:
 	if cloud.is_empty():
 		return  # an unreadable cloud save can never be restored
 	busy = true
-	_restore(cloud, CloudSave.progress_hash(cloud))
+	if not _restore(cloud, CloudSave.progress_hash(cloud)):
+		busy = false
+		changed.emit()
 
 # ---------- A different account is signed in ----------
 
-## Reads the new account's cloud save, to show it. Nothing is written to either side.
+## Reads the new account's cloud save, to show it. Nothing is written to either save. What it finds is kept exactly:
+## the raw bytes of a snapshot, and any versions Google reports in a conflict.
 func _start_probe(hashed: String) -> void:
 	_pending_account = hashed
-	account_change = {"cloud": {}, "cloud_data": {}, "bad": "", "empty": false, "probed": false, "suspended": false}
+	choice_error = ""
+	account_change = {"cloud": {}, "cloud_data": {}, "raw_bytes": PackedByteArray(), "bad": "", "empty": false, "probed": false, "suspended": false, "conflict": false, "replaceable": false}
 	changed.emit()
 	var tok := _begin()
 	backend.load_snapshot(CloudSave.SNAPSHOT_NAME, func(r): _on_probe(tok, r))
@@ -439,36 +517,51 @@ func _on_probe(tok: int, r: Dictionary) -> void:
 		return
 	busy = false
 	if not bool(r.get("ok", false)):
-		account_change.bad = "This account's cloud save could not be read right now."
+		if str(r.get("kind", "")) == "conflict":
+			# Both versions are kept. This account cannot be replaced or restored from while Google holds two.
+			var info := _preserve_candidates(r)
+			account_change.conflict = true
+			account_change.probed = true
+			account_change.bad = _conflict_text(info)
+		else:
+			account_change.bad = "This account's cloud save could not be read right now."
 		last_error = account_change.bad
 	elif not bool(r.get("found", false)):
 		account_change.empty = true
 		account_change.probed = true
+		account_change.replaceable = true
 	else:
-		var dec := CloudSave.decode(r.get("bytes", PackedByteArray()))
+		var raw: PackedByteArray = r.get("bytes", PackedByteArray())
+		account_change.raw_bytes = raw
+		var dec := CloudSave.decode(raw)
 		if bool(dec.ok):
 			account_change.cloud = CloudSave.summarize(dec.data)
 			account_change.cloud_data = dec.data
 		else:
 			account_change.bad = str(dec.error)
 		account_change.probed = true
+		account_change.replaceable = true
 	changed.emit()
 	account_found.emit()
 
 func _can_choose_account() -> bool:
 	return not account_change.is_empty() and bool(account_change.probed) and not busy and signed_in() and not _pending_account.is_empty()
 
-## The player chose to carry this device's save over to the new account. What that account had in the cloud is kept
-## in a file here first. An empty save is never carried over a save that has progress.
+## The player chose to carry this device's save over to the new account. What that account had in the cloud, exactly as
+## it was, even if unreadable, is written to .cloudconflict and read back first. If that fails, nothing is replaced and
+## the decision stays open. An empty save is never carried over a save that has progress.
 func account_use_local() -> void:
-	if not _can_choose_account():
+	if not _can_choose_account() or not bool(account_change.get("replaceable", false)):
 		return
 	var local := Save.to_dict()
 	if not CloudSave.has_progress(local):
 		return
-	var cloud: Dictionary = account_change.cloud_data
-	if not cloud.is_empty():
-		_write_blob(Save.path + ".cloudconflict", CloudSave.encode(cloud))
+	var raw: PackedByteArray = account_change.get("raw_bytes", PackedByteArray())
+	if not raw.is_empty() and not _write_blob(Save.path + ".cloudconflict", raw):
+		_backup_failed("the new account's cloud save")
+		changed.emit()
+		return
+	choice_error = ""
 	_bind_account(_pending_account)
 	account_change = {}
 	_force_local = true
@@ -477,17 +570,23 @@ func account_use_local() -> void:
 	_upload(local)
 	changed.emit()
 
-## The player chose the new account's cloud save. This device's save is kept in files here first.
+## The player chose the new account's cloud save. This device's save is kept in files here first. If that fails,
+## nothing is replaced, the account is not bound, and the decision stays open.
 func account_use_cloud() -> void:
 	if not _can_choose_account():
 		return
 	var cloud: Dictionary = account_change.cloud_data
 	if cloud.is_empty():
 		return
+	if not _keep_copy_of_local():
+		_backup_failed("this device's save")
+		changed.emit()
+		return
+	choice_error = ""
 	_bind_account(_pending_account)
 	account_change = {}
 	busy = true
-	_restore(cloud, CloudSave.progress_hash(cloud))
+	_restore(cloud, CloudSave.progress_hash(cloud), false)
 
 ## Pause cloud sync for now. Both saves stay exactly as they are.
 func account_pause() -> void:
@@ -524,12 +623,7 @@ func _finish_ok() -> void:
 func _fail_result(r: Dictionary) -> void:
 	var kind := str(r.get("kind", "error"))
 	if kind == "conflict":
-		var n := 0
-		for c in r.get("candidates", []):
-			var bytes: PackedByteArray = c.get("bytes", PackedByteArray())
-			if not bytes.is_empty():
-				n += 1
-				_write_blob(Save.path + ".cloudconflict.%d" % n, bytes)
+		_conflict_info = _preserve_candidates(r)
 		_fail("conflict", str(r.get("origin", "")))
 	else:
 		_fail(kind, str(r.get("detail", "")))
@@ -547,9 +641,10 @@ func _fail(kind: String, detail: String) -> void:
 			last_error = "Google Play Games sign-in is needed. Your progress is safe on this device."
 		"identity":
 			last_error = "Could not confirm which Google Play Games account is signed in, so nothing was synced. Your progress is safe on this device."
+		"backup":
+			last_error = "Could not keep a copy of this device's save, so the cloud save was not restored. Nothing was changed, and your progress is safe on this device."
 		"conflict":
-			var when := "" if detail == "" else (" while saving" if detail == "SAVE" else " while loading")
-			last_error = "Google Play Games reported two different cloud versions of your save%s. This build cannot settle that, so nothing was changed. Both versions were kept on this device, and your progress here is untouched." % when
+			last_error = _conflict_text(_conflict_info)
 		_:
 			last_error = ("Cloud sync failed. " + detail).strip_edges() + " Your progress is safe on this device."
 	_refresh_pending()
@@ -595,6 +690,7 @@ func _end_session() -> void:
 	_retry_step = 0
 	conflict = {}
 	account_change = {}
+	choice_error = ""
 	if _timer != null:
 		_timer.stop()
 

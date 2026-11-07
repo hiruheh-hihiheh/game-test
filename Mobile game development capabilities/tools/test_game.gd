@@ -1779,8 +1779,8 @@ func _cloud_script_class():
 	return load("res://src/meta/cloud_save.gd")
 
 ## A Cloud orchestrator of its own, wired to `mock`, with a short debounce so tests need not wait.
-func _make_cloud(mock, signed_in := true):
-	var cloud = _cloud_script.new()
+func _make_cloud(mock, signed_in := true, script = null):
+	var cloud = (script if script != null else _cloud_script).new()
 	cloud.autostart = false
 	cloud.debounce = 0.05
 	cloud.timeout = 1.0
@@ -2177,6 +2177,7 @@ func _test_cloud_sync(original: Dictionary) -> void:
 	check(not live.busy and CS.progress_hash(save.to_dict()) == CS.progress_hash(before_live), "Sync Now does nothing without a service")
 	await _test_cloud_accounts()
 	await _test_cloud_cleanup()
+	await _test_cloud_preservation()
 	await _test_cloud_plugin()
 	await _test_cloud_profile(rich)
 	# --- Put the test save back ---
@@ -2310,6 +2311,19 @@ func _test_cloud_profile(rich: Dictionary) -> void:
 	for i in range(4):
 		await process_frame
 	check(seen.call("YES, REPLACE THIS DEVICE'S SAVE"), "Restore also asks again")
+	# If this device's save cannot be copied away first, nothing is replaced and the page says why.
+	var blocked_by: String = save.path + ".cloudconflict"
+	DirAccess.make_dir_absolute(blocked_by)
+	var guard_restore: Dictionary = save.to_dict()
+	await _press_id(menu.ui, "cloud_confirm")
+	for i in range(6):
+		await process_frame
+	check(C.status() == St.CONFLICT and CS.progress_hash(save.to_dict()) == CS.progress_hash(guard_restore) and _shown_has(profile, "Could not keep a copy") and _shown_has(profile, "Your saves are unchanged"), "a failed backup is explained on the page and nothing was replaced")
+	check(rect_ok.call("cloud_keep") and rect_ok.call("cloud_restore"), "and the decision is still there")
+	DirAccess.remove_absolute(blocked_by)
+	await _press_id(menu.ui, "cloud_restore")
+	for i in range(4):
+		await process_frame
 	await _press_id(menu.ui, "cloud_confirm")
 	for i in range(60):
 		await process_frame
@@ -2959,6 +2973,296 @@ func _test_cloud_plugin() -> void:
 		DirAccess.remove_absolute(f)
 	_clear_cloud_files()
 	print("cloud plugin ok")
+
+## One byte of the base64 payload changed: still plain ASCII, no longer matches its checksum.
+func _corrupt_blob(bytes: PackedByteArray) -> PackedByteArray:
+	var text := bytes.get_string_from_ascii()
+	var at := text.find("\"payload\":\"") + 30
+	var ch := text[at]
+	text = text.substr(0, at) + ("B" if ch != "B" else "C") + text.substr(at + 1)
+	return text.to_ascii_buffer()
+
+func _faulty_cloud(mock, script):
+	return _make_cloud(mock, true, script)
+
+## Replacing a cloud save, restoring over local progress and deciding about an account only ever happen after the
+## copy that makes them recoverable has been written and read back. Every failure leaves both sides as they were.
+func _test_cloud_preservation() -> void:
+	var CS = _cloud_script_class()
+	var St = CS.Status
+	var faulty = load("res://tools/faulty_cloud_sync.gd")
+	var cc: String = save.path + ".cloudconflict"
+
+	# --- Unreadable cloud data, then KEEP THIS DEVICE'S SAVE: the exact bytes are kept ---
+	for case in ["corrupted", "newer"]:
+		_cloud_rich_save()
+		_clear_cloud_files()
+		var local: Dictionary = save.to_dict()
+		var junk: PackedByteArray
+		if case == "corrupted":
+			var other: Dictionary = local.duplicate(true)
+			other.salvage = 31
+			junk = _corrupt_blob(CS.encode(other))
+		else:
+			var future: Dictionary = local.duplicate(true)
+			future["version"] = 99
+			future.salvage = 32
+			junk = CS.encode(future)
+		check(not bool(CS.decode(junk).ok), "the %s blob really is unreadable" % case)
+		var mock = _cloud_mock_script.new()
+		mock.set_blob(junk)
+		var cloud = _make_cloud(mock)
+		await _cloud_settle(cloud)
+		check(cloud.status() == St.CONFLICT and (cloud.conflict.cloud as Dictionary).is_empty() and cloud.conflict.raw_bytes == junk, "%s cloud data: the conflict holds the original bytes" % case)
+		cloud.keep_local()
+		await _cloud_settle(cloud)
+		check(cloud.status() == St.SYNCED and bool(CS.decode(mock.blob).ok) and CS.progress_hash(CS.decode(mock.blob).data) == CS.progress_hash(local), "%s cloud data: this device's save replaced it" % case)
+		check(_read_blob(cc) == junk, "%s cloud data: the old cloud bytes were kept exactly, not re-encoded" % case)
+		await _free_cloud(cloud)
+
+	# --- A readable cloud save is kept exactly as the cloud sent it too ---
+	_cloud_rich_save()
+	_clear_cloud_files()
+	var mine: Dictionary = save.to_dict()
+	var theirs: Dictionary = mine.duplicate(true)
+	theirs.salvage = 4
+	var theirs_blob: PackedByteArray = CS.encode(theirs)
+	var mock2 = _cloud_mock_script.new()
+	mock2.set_blob(theirs_blob)
+	var cloud2 = _make_cloud(mock2)
+	await _cloud_settle(cloud2)
+	cloud2.keep_local()
+	await _cloud_settle(cloud2)
+	check(_read_blob(cc) == theirs_blob and cloud2.status() == St.SYNCED, "a readable cloud save is kept byte for byte")
+	await _free_cloud(cloud2)
+
+	# --- Unreadable cloud data during an account switch ---
+	_cloud_rich_save()
+	_clear_cloud_files()
+	mine = save.to_dict()
+	var bad_b: PackedByteArray = _corrupt_blob(CS.encode(theirs))
+	var mock3 = _cloud_mock_script.new()
+	var cloud3 = _make_cloud(mock3)
+	await _cloud_settle(cloud3)
+	var a_blob: PackedByteArray = mock3.blob.duplicate()
+	_switch_account(mock3, "acct-B")
+	mock3.set_blob(bad_b)
+	cloud3.sync_now(true)
+	await _cloud_settle(cloud3)
+	check(cloud3.status() == St.ACCOUNT and bool(cloud3.account_change.replaceable) and cloud3.account_change.raw_bytes == bad_b and (cloud3.account_change.cloud as Dictionary).is_empty(), "an unreadable cloud save on the new account is held exactly")
+	cloud3.account_use_cloud()
+	check(cloud3.status() == St.ACCOUNT and CS.progress_hash(save.to_dict()) == CS.progress_hash(mine), "it cannot be loaded")
+	cloud3.account_use_local()
+	await _cloud_settle(cloud3)
+	check(cloud3.status() == St.SYNCED and _read_blob(cc) == bad_b, "choosing this device's save kept the new account's unreadable bytes exactly")
+	check(CS.progress_hash(CS.decode(mock3.blob).data) == CS.progress_hash(mine) and mock3.blob_of("acct-A") == a_blob, "and replaced only the new account's snapshot")
+	await _free_cloud(cloud3)
+
+	# --- Google reports two versions while the new account is being looked at ---
+	_cloud_rich_save()
+	_clear_cloud_files()
+	mine = save.to_dict()
+	var ver_a: PackedByteArray = CS.encode(theirs)
+	var other_b: Dictionary = theirs.duplicate(true)
+	other_b.salvage = 5
+	var ver_b: PackedByteArray = CS.encode(other_b)
+	var mock4 = _cloud_mock_script.new()
+	var cloud4 = _make_cloud(mock4)
+	await _cloud_settle(cloud4)
+	var saves4: int = mock4.saves
+	for f in [save.path + ".cloudconflict.1", save.path + ".cloudconflict.2"]:
+		_write_text(f, "STALE")
+	mock4.conflict_blobs = [ver_a, ver_b]
+	mock4.conflict_next = "LOAD"
+	_switch_account(mock4, "acct-B")
+	await _cloud_settle(cloud4)
+	check(cloud4.status() == St.ACCOUNT and bool(cloud4.account_change.conflict) and bool(cloud4.account_change.probed), "a Google conflict while looking at the new account is shown, not dropped")
+	check(_read_blob(save.path + ".cloudconflict.1") == ver_a and _read_blob(save.path + ".cloudconflict.2") == ver_b, "both versions were kept exactly, replacing the stale files")
+	check("Both versions were kept" in str(cloud4.account_change.bad), "and the screen says so")
+	cloud4.account_use_local()
+	cloud4.account_use_cloud()
+	await process_frame
+	check(cloud4.status() == St.ACCOUNT and mock4.saves == saves4 and CS.progress_hash(save.to_dict()) == CS.progress_hash(mine), "neither choice can replace anything while Google holds two versions")
+	await _free_cloud(cloud4)
+	# A conflict with one version must not leave an old second file behind.
+	_cloud_rich_save()
+	_clear_cloud_files()
+	var mock5 = _cloud_mock_script.new()
+	var cloud5 = _make_cloud(mock5)
+	await _cloud_settle(cloud5)
+	_write_text(save.path + ".cloudconflict.2", "STALE")
+	mock5.conflict_blobs = [ver_a]
+	mock5.conflict_next = "LOAD"
+	cloud5.sync_now(true)
+	await _cloud_settle(cloud5)
+	check(_read_blob(save.path + ".cloudconflict.1") == ver_a and not FileAccess.file_exists(save.path + ".cloudconflict.2") and "The version was kept" in cloud5.last_error, "one version: kept, and the stale second file is gone")
+	await _free_cloud(cloud5)
+
+	# --- A backup that cannot be opened: nothing is replaced ---
+	_cloud_rich_save()
+	_clear_cloud_files()
+	mine = save.to_dict()
+	var junk2: PackedByteArray = _corrupt_blob(CS.encode(theirs))
+	var mock6 = _cloud_mock_script.new()
+	mock6.set_blob(junk2)
+	var cloud6 = _make_cloud(mock6)
+	await _cloud_settle(cloud6)
+	check(DirAccess.make_dir_absolute(cc) == OK, "a directory now blocks the backup file")
+	cloud6.keep_local()
+	await process_frame
+	check(cloud6.status() == St.CONFLICT and mock6.saves == 0 and mock6.blob == junk2 and CS.progress_hash(save.to_dict()) == CS.progress_hash(mine), "an unopenable backup: the cloud save was not replaced and nothing changed")
+	check("Could not keep a copy" in cloud6.choice_error and "the cloud save" in cloud6.choice_error, "and the player is told")
+	DirAccess.remove_absolute(cc)
+	cloud6.keep_local()
+	await _cloud_settle(cloud6)
+	check(cloud6.status() == St.SYNCED and _read_blob(cc) == junk2 and cloud6.choice_error == "", "with the problem gone, the same decision goes through, and the old bytes are kept")
+	await _free_cloud(cloud6)
+
+	# --- Writes that fail, or write only part of the data ---
+	for fault in ["fail_store_for", "short_write_for"]:
+		_cloud_rich_save()
+		_clear_cloud_files()
+		mine = save.to_dict()
+		var mock7 = _cloud_mock_script.new()
+		mock7.set_blob(junk2)
+		var cloud7 = _faulty_cloud(mock7, faulty)
+		await _cloud_settle(cloud7)
+		cloud7.set(fault, ".cloudconflict")
+		cloud7.keep_local()
+		await process_frame
+		check(cloud7.status() == St.CONFLICT and mock7.saves == 0 and mock7.blob == junk2 and CS.progress_hash(save.to_dict()) == CS.progress_hash(mine) and cloud7.choice_error != "", "%s: KEEP THIS DEVICE'S SAVE does nothing and says why" % fault)
+		cloud7.set(fault, "")
+		cloud7.keep_local()
+		await _cloud_settle(cloud7)
+		check(cloud7.status() == St.SYNCED and _read_blob(cc) == junk2, "%s: and works once writes work" % fault)
+		await _free_cloud(cloud7)
+
+	# --- Restoring the cloud save when this device's save cannot be backed up ---
+	for fault in ["fail_copy", "fail_open_for", "fail_store_for", "short_write_for"]:
+		_cloud_rich_save()
+		_clear_cloud_files()
+		var mock8 = _cloud_mock_script.new()
+		var cloud8 = _faulty_cloud(mock8, faulty)
+		await _cloud_settle(cloud8)
+		var cloud_side: Dictionary = save.to_dict()
+		cloud_side.salvage = 777
+		mock8.set_blob(CS.encode(cloud_side))
+		save.salvage = 5
+		save.save_data()
+		await _cloud_settle(cloud8)
+		check(cloud8.status() == St.CONFLICT, "(%s) both changed: a conflict" % fault)
+		mine = save.to_dict()
+		var blob8: PackedByteArray = mock8.blob.duplicate()
+		cloud8.set(fault, true if fault == "fail_copy" else ".cloudconflict")
+		cloud8.restore_cloud()
+		await process_frame
+		check(cloud8.status() == St.CONFLICT and save.salvage == 5 and CS.progress_hash(save.to_dict()) == CS.progress_hash(mine) and mock8.blob == blob8, "%s: RESTORE CLOUD SAVE does nothing when the backup fails" % fault)
+		check("this device's save" in cloud8.choice_error, "%s: and says which copy failed" % fault)
+		cloud8.set(fault, false if fault == "fail_copy" else "")
+		cloud8.restore_cloud()
+		await _cloud_settle(cloud8)
+		check(save.salvage == 777 and cloud8.status() == St.SYNCED and int(CS.decode(_read_blob(cc)).data.salvage) == 5, "%s: and goes through, keeping the old save, once the backup works" % fault)
+		await _free_cloud(cloud8)
+
+	# --- A silent restore (new install) is refused too when it cannot keep a copy ---
+	_cloud_rich_save()
+	var rich_blob: PackedByteArray = CS.encode(save.to_dict())
+	_fresh_install()
+	_clear_cloud_files()
+	var fresh_before: Dictionary = save.to_dict()
+	var mock9 = _cloud_mock_script.new()
+	mock9.set_blob(rich_blob)
+	var cloud9 = _make_cloud(mock9, false, faulty)
+	cloud9.fail_copy = true
+	mock9.set_auth(CS.Auth.SIGNED_IN)
+	await _cloud_settle(cloud9)
+	check(cloud9.status() == St.ERROR and cloud9._fail_kind == "backup" and CS.progress_hash(save.to_dict()) == CS.progress_hash(fresh_before) and mock9.blob == rich_blob, "a silent restore that cannot be backed up does not happen, and the cloud save is untouched")
+	check("Could not keep a copy" in cloud9.last_error and cloud9.choice_error == "", "and the error is explained")
+	cloud9.fail_copy = false
+	cloud9.sync_now(true)
+	await _cloud_settle(cloud9)
+	check(cloud9.status() == St.SYNCED and save.salvage == 12345, "and it restores once the backup works")
+	await _free_cloud(cloud9)
+
+	# --- Account change: loading the new account's save with no backup possible ---
+	_cloud_rich_save()
+	_clear_cloud_files()
+	mine = save.to_dict()
+	var mock10 = _cloud_mock_script.new()
+	var cloud10 = _faulty_cloud(mock10, faulty)
+	await _cloud_settle(cloud10)
+	_switch_account(mock10, "acct-B")
+	mock10.set_blob(CS.encode(theirs))
+	cloud10.sync_now(true)
+	await _cloud_settle(cloud10)
+	var bound: String = cloud10._account
+	cloud10.fail_copy = true
+	cloud10.account_use_cloud()
+	await process_frame
+	check(cloud10.status() == St.ACCOUNT and cloud10._account == bound and CS.progress_hash(save.to_dict()) == CS.progress_hash(mine) and cloud10.choice_error != "", "loading the new account's save without a backup: nothing changed, still bound to the old account, decision open")
+	cloud10.fail_copy = false
+	cloud10.account_use_cloud()
+	await _cloud_settle(cloud10)
+	check(save.salvage == int(theirs.salvage) and cloud10.status() == St.SYNCED and cloud10._account != bound, "and it works once the backup does")
+	await _free_cloud(cloud10)
+
+	# --- Account change: carrying this device's save over an unreadable cloud save, backup failing ---
+	_cloud_rich_save()
+	_clear_cloud_files()
+	mine = save.to_dict()
+	var mock11 = _cloud_mock_script.new()
+	var cloud11 = _faulty_cloud(mock11, faulty)
+	await _cloud_settle(cloud11)
+	_switch_account(mock11, "acct-B")
+	mock11.set_blob(bad_b)
+	cloud11.sync_now(true)
+	await _cloud_settle(cloud11)
+	var saves11: int = mock11.saves
+	var bound11: String = cloud11._account
+	cloud11.fail_store_for = ".cloudconflict"
+	cloud11.account_use_local()
+	await process_frame
+	check(cloud11.status() == St.ACCOUNT and mock11.saves == saves11 and mock11.blob == bad_b and cloud11._account == bound11 and cloud11.choice_error != "", "the new account's unreadable save was not replaced, because its bytes could not be kept")
+	cloud11.fail_store_for = ""
+	cloud11.account_use_local()
+	await _cloud_settle(cloud11)
+	check(cloud11.status() == St.SYNCED and _read_blob(cc) == bad_b, "and it is kept, then replaced, once writes work")
+	await _free_cloud(cloud11)
+
+	# --- Google conflict where a version cannot be written: never claim both were kept ---
+	for broken in [".cloudconflict.2", ".cloudconflict.1"]:
+		_cloud_rich_save()
+		_clear_cloud_files()
+		var mock12 = _cloud_mock_script.new()
+		var cloud12 = _faulty_cloud(mock12, faulty)
+		await _cloud_settle(cloud12)
+		for f in [save.path + ".cloudconflict.1", save.path + ".cloudconflict.2"]:
+			_write_text(f, "STALE")
+		mock12.conflict_blobs = [ver_a, ver_b]
+		mock12.conflict_next = "LOAD"
+		cloud12.fail_open_for = broken
+		cloud12.sync_now(true)
+		await _cloud_settle(cloud12)
+		var other_slot: String = ".cloudconflict.1" if broken == ".cloudconflict.2" else ".cloudconflict.2"
+		var want: PackedByteArray = ver_a if other_slot == ".cloudconflict.1" else ver_b
+		check(_read_blob(save.path + other_slot) == want and not FileAccess.file_exists(save.path + broken), "the version that could be written is exact, and no stale file stands in for the other (%s failed)" % broken)
+		check(not "Both versions were" in cloud12.last_error and "Could not keep a copy of 1 of the 2" in cloud12.last_error, "and the message does not claim both were kept (%s failed)" % broken)
+		await _free_cloud(cloud12)
+	_cloud_rich_save()
+	_clear_cloud_files()
+	var mock13 = _cloud_mock_script.new()
+	var cloud13 = _faulty_cloud(mock13, faulty)
+	await _cloud_settle(cloud13)
+	mock13.conflict_blobs = [ver_a, ver_b]
+	mock13.conflict_next = "LOAD"
+	cloud13.fail_store_for = ".cloudconflict.1"
+	cloud13.short_write_for = ".cloudconflict.2"
+	cloud13.sync_now(true)
+	await _cloud_settle(cloud13)
+	check("Could not keep a copy of 2 of the 2" in cloud13.last_error and not "Both versions were" in cloud13.last_error, "when neither version could be written, it says so")
+	await _free_cloud(cloud13)
+	_clear_cloud_files()
+	print("cloud preservation ok")
 
 func _sha(bytes: PackedByteArray) -> String:
 	var ctx := HashingContext.new()

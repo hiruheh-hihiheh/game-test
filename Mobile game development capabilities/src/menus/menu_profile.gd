@@ -346,10 +346,13 @@ func _conflict_card(c: UILayer, x: float, y: float, w: float) -> float:
 	var bad := str(info.get("bad", ""))
 	var inner := w - 48.0
 	var intro := _wrap("Your cloud save and this device's save are different. Nothing changes until you choose.", 17, inner)
+	var err := _wrap(Cloud.choice_error, 16, inner) if not Cloud.choice_error.is_empty() else []
 	var confirming := _confirm != ""
 	var consequence_keep := _wrap("Uploads this device's progress and replaces the cloud save. A copy of the cloud save stays on this device.", 16, inner)
 	var consequence_restore := _wrap("Replaces this device's progress with the cloud save. A copy of this device's save stays on this device.", 16, inner)
 	var h := 28.0 + 40.0 + 12.0 + 26.0 * float(intro.size()) + 14.0 + 168.0 + 18.0
+	if not err.is_empty():
+		h += 26.0 * float(err.size()) + 14.0
 	if confirming:
 		h += 26.0 * float((consequence_keep if _confirm == "keep" else consequence_restore).size()) + 16.0 + 64.0 + 34.0 + 64.0
 	else:
@@ -362,6 +365,8 @@ func _conflict_card(c: UILayer, x: float, y: float, w: float) -> float:
 	_label_chip(c, Vector2(ox, cy + 18.0), "CHOOSE A SAVE", 20, UI.GOLD)
 	cy += 52.0
 	cy = _paragraph(c, intro, ox, cy + 14.0, 17, UI.WHITE) - 14.0 + 14.0
+	if not err.is_empty():
+		cy = _paragraph(c, err, ox, cy + 14.0, 16, UI.RED) - 14.0 + 14.0
 	var half := (inner - 14.0) * 0.5
 	for i in range(2):
 		var box := Rect2(ox + float(i) * (half + 14.0), cy, half, 168.0)
@@ -410,6 +415,8 @@ func _account_change_card(c: UILayer, x: float, y: float, w: float) -> float:
 	var cloud: Dictionary = info.get("cloud", {})
 	var cloud_ok := not cloud.is_empty()
 	var head := _wrap(Cloud.detail_text(), 17, inner)
+	var err := _wrap(Cloud.choice_error, 16, inner) if not Cloud.choice_error.is_empty() else []
+	var replaceable := bool(info.get("replaceable", false))
 	var confirming := _confirm == "acct_local" or _confirm == "acct_cloud"
 	var texts := {
 		"local": _wrap("Uploads this device's progress to the new account and replaces any cloud save it has. A copy of that cloud save stays on this device.", 16, inner),
@@ -417,6 +424,8 @@ func _account_change_card(c: UILayer, x: float, y: float, w: float) -> float:
 		"pause": _wrap("Changes nothing. This device keeps its save and nothing syncs.", 16, inner),
 	}
 	var h := 28.0 + 52.0 + 26.0 * float(head.size()) + 14.0
+	if not err.is_empty():
+		h += 26.0 * float(err.size()) + 14.0
 	var note: Array = []
 	if suspended:
 		h += 64.0
@@ -439,6 +448,8 @@ func _account_change_card(c: UILayer, x: float, y: float, w: float) -> float:
 	_label_chip(c, Vector2(ox, cy + 18.0), Cloud.status_label(), 20, UI.GOLD)
 	cy += 52.0
 	cy = _paragraph(c, head, ox, cy + 14.0, 17, UI.WHITE) - 14.0 + 14.0
+	if not err.is_empty():
+		cy = _paragraph(c, err, ox, cy + 14.0, 16, UI.RED) - 14.0 + 14.0
 	if suspended:
 		if capture_text:
 			shown.append("CHOOSE WHAT TO DO")
@@ -459,9 +470,9 @@ func _account_change_card(c: UILayer, x: float, y: float, w: float) -> float:
 			_t(c, "THIS DEVICE" if i == 0 else "NEW ACCOUNT'S CLOUD", box.position + Vector2(14.0, 30.0), 17 if i == 0 else 15, UI.CYAN if i == 0 else UI.VIOLET, true)
 			var sm: Dictionary = local if i == 0 else cloud
 			if i == 1 and not cloud_ok:
-				var word := "NO CLOUD SAVE" if bool(info.get("empty", false)) else "UNREADABLE"
+				var word := "NO CLOUD SAVE" if bool(info.get("empty", false)) else ("CONFLICT" if bool(info.get("conflict", false)) else "UNREADABLE")
 				_ft(c, word, box.position + Vector2(14.0, 70.0), 22, 13, half - 28.0, UI.GOLD if word == "NO CLOUD SAVE" else UI.RED, true)
-				if word == "UNREADABLE":
+				if word != "NO CLOUD SAVE":
 					_paragraph(c, _wrap(str(info.get("bad", "")), 15, half - 28.0).slice(0, 3), box.position.x + 14.0, box.position.y + 100.0, 15, UI.TEXT_DIM, 22.0)
 			else:
 				_ft(c, "PILOT LEVEL %d" % int(sm.level), box.position + Vector2(14.0, 68.0), 22, 14, half - 28.0, UI.WHITE, true)
@@ -480,7 +491,7 @@ func _account_change_card(c: UILayer, x: float, y: float, w: float) -> float:
 			c.button("cloud_acct_cancel", Rect2(ox, cy + 64.0 + 34.0, inner, 64.0), "CANCEL", UI.CYAN, {"size": 20})
 		else:
 			var items := [
-				["cloud_acct_local", "USE THIS DEVICE'S SAVE", UI.CYAN, texts.local, not local_has],
+				["cloud_acct_local", "USE THIS DEVICE'S SAVE", UI.CYAN, texts.local, not local_has or not replaceable],
 				["cloud_acct_cloud", "LOAD THIS ACCOUNT'S CLOUD SAVE", UI.VIOLET, texts.cloud, not cloud_ok],
 				["cloud_acct_pause", "PAUSE CLOUD SYNC", UI.CYAN, texts.pause, false],
 			]
