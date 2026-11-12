@@ -334,7 +334,7 @@ func _paint_title(c: UILayer) -> void:
 	c.button("hangar", Rect2(x, y, half, 94), "HANGAR", UI.CYAN, {"art": "hangar", "art_size": 60, "size": 25})
 	badge(c, Rect2(x, y, half, 94), (1 if _cheapest_upgrade_ready() else 0) + Save.new_gear_count())
 	c.button("ops", Rect2(x + half + 18.0, y, half, 94), "OPS", UI.CYAN, {"art": "ops", "art_size": 60, "size": 25})
-	badge(c, Rect2(x + half + 18.0, y, half, 94), Meta.claimable_contracts())
+	badge(c, Rect2(x + half + 18.0, y, half, 94), Meta.claimable_contracts() + Rewards.waiting())
 	y += 110.0
 	var exp_open := Save.unlocked >= Levels.EXPEDITION_UNLOCK
 	var end_open := Save.unlocked >= Levels.ENDLESS_UNLOCK

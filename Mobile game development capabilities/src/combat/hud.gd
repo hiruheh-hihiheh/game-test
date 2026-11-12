@@ -162,6 +162,8 @@ func _paint_hud(c: UILayer) -> void:
 func _flight_label() -> String:
 	if g.mode == "endless":
 		return "RIFT FLOOR %d" % int(g.endless_wave)
+	if g.mode == "rush":
+		return "BOSS RUSH %d/%d" % [int(g.endless_wave), Bosses.RUSH_ORDER.size()]
 	var total: int = (g.level.waves as Array).size()
 	var base: String = "LEVEL %d" % int(g.level_num) if g.mode == "campaign" else str(g.level.name)
 	if int(g.tier) > 0:
@@ -404,12 +406,14 @@ func _paint_results(c: UILayer) -> void:
 	var sub := str(g.level.get("name", ""))
 	if g.mode == "endless":
 		sub = "RIFT  ·  FLOOR %d" % int(g.endless_wave)
+	elif g.mode == "rush":
+		sub = "BOSS RUSH"
 	if int(g.tier) > 0:
 		sub += "  ·  " + str(g.tier_cfg.name)
 	UI.text(c, sub, Vector2(W * 0.5, y), 22, Color(color, k), false, UI.CENTER)
 	y += 26.0
 	var campaign_win: bool = g.mode in ["campaign", "side"] and win
-	var panel_h := 340.0 if campaign_win else (240.0 if g.mode == "endless" else 214.0)
+	var panel_h := 340.0 if campaign_win else (240.0 if g.mode in ["endless", "rush"] else 214.0)
 	var panel := Rect2(x, y, w, panel_h)
 	UI.panel(c, panel, Color(0.03, 0.05, 0.12, 0.97 * k), Color(color, 0.7 * k), 20, 2, 12)
 	var row := panel.position.y + 42.0
@@ -422,6 +426,8 @@ func _paint_results(c: UILayer) -> void:
 	row = _stat_row(c, x, row, w, "BEST COMBO", str(g.best_combo), UI.GOLD, k)
 	if g.mode == "endless":
 		_stat_row(c, x, row, w, "FLOOR", str(g.endless_wave), UI.GOLD, k)
+	elif g.mode == "rush":
+		_stat_row(c, x, row, w, "BOSSES DOWN", "%d / %d" % [int(g.rush_beaten), Bosses.RUSH_ORDER.size()], UI.GOLD, k)
 	y = panel.end.y + 14.0
 	y = _paint_pilot(c, x, y, w, k) + 12.0
 	y = _paint_loot(c, x, y, w, k)
@@ -509,6 +515,11 @@ func _paint_star_rows(c: UILayer, x: float, y: float, w: float, k: float) -> flo
 			UI.glow(c, at, 44.0, Color(UI.GOLD, 0.5))
 		UI.star(c, at, 22.0, UI.GOLD if lit else Color(0.2, 0.24, 0.34, k))
 		UI.text(c, labels[bit], Vector2(x + 86.0, row), 22, Color(UI.WHITE if earned else UI.TEXT_DIM, k), false)
+		if bit == 2:
+			# How close it was, so a missed star reads as "nearly" and not as a mystery.
+			var got: String = g.objective_result()
+			if not got.is_empty():
+				UI.text(c, got, Vector2(x + w - 8.0, row), 20, Color(UI.MINT if earned else UI.ORANGE, k), true, UI.RIGHT)
 		row += 42.0
 	return row + 18.0
 

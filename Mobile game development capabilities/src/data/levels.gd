@@ -28,81 +28,82 @@ const SECTORS := [
 ]
 
 # obj is the level's bonus star: [type, amount]. Star 1 is clearing, star 2 is keeping every hull.
+# A goal may never ask for more than the level holds: see supply(), STAR_SHARE and the star tests.
 const CAMPAIGN := [
 	# --- Sector 1: Debris Belt. Teaches movement, then cover. ---
-	{"n": "First Light", "obj": ["crystals", 5], "w": ["rocks rain 4", "rocks rain 6"]},
-	{"n": "Loose Change", "obj": ["crystals", 9], "w": ["rocks rain 5; fighter line 2", "fighter vee 3; rocks rain 5"]},
+	{"n": "First Light", "obj": ["kills", 7], "w": ["rocks rain 4", "rocks rain 6"]},
+	{"n": "Loose Change", "obj": ["kills", 10], "w": ["rocks rain 5; fighter line 2", "fighter vee 3; rocks rain 5"]},
 	{"n": "Cover Fire", "obj": ["wrecks", 2], "tip": "Wrecks stop enemy shots. Fly behind them, then break them for crystals.", "w": ["wreck drift 2; fighter line 3", "wreck drift 2; fighter vee 4"]},
 	{"n": "Rockfall", "obj": ["combo", 12], "w": ["!storm 9; fighter line 2", "fighter column 4; rocks rain 6"]},
 	{"n": "The Scrap Baron", "obj": ["time", 60], "elite": true, "w": ["fighter vee 4; rocks rain 4", "elite hold 1 shielded"]},
-	{"n": "Scrapyard Run", "obj": ["crystals", 16], "w": ["wreck drift 3; raider dive 3", "!treasure 1; raider pincer 4; fighter line 3"]},
+	{"n": "Scrapyard Run", "obj": ["crystals", 8], "w": ["wreck drift 3; raider dive 3", "!treasure 1; raider pincer 4; fighter line 3"]},
 	{"n": "Thread the Needle", "obj": ["shield", 1], "w": ["wreck drift 4; fighter line 4", "weaver sine 4; rocks rain 5", "fighter vee 5; wreck drift 2"]},
-	{"n": "Meteor Season", "obj": ["combo", 25], "w": ["!storm 13", "raider dive 5; rocks rain 6", "!storm 8; gunship hold 1"]},
+	{"n": "Meteor Season", "obj": ["combo", 12], "w": ["!storm 13", "raider dive 5; rocks rain 6", "!storm 8; gunship hold 1"]},
 	{"n": "Salvage Rights", "obj": ["wrecks", 4], "w": ["wreck drift 3; gunship hold 1", "wreck drift 3; fighter vee 5; raider pincer 4", "!treasure 1; weaver sine 5"]},
 	{"n": "The Gravity Warden", "obj": ["time", 100], "boss": true, "w": ["rocks rain 6; fighter line 3"]},
 	# --- Sector 2: Ember Drift. Heat as risk and reward. ---
-	{"n": "Burning Lanes", "obj": ["crystals", 12], "tip": "Red bars mark a flare. Move out of the lane before it fires.", "w": ["fighter line 3; !flare 1", "cinder dive 3; !flare 2"]},
+	{"n": "Burning Lanes", "obj": ["kills", 4], "tip": "Red bars mark a flare. Move out of the lane before it fires.", "w": ["fighter line 3; !flare 1", "cinder dive 3; !flare 2"]},
 	{"n": "Free Energy", "obj": ["ember", 4], "tip": "Ember clouds burn your shield but overcharge Nova. Dip in, get out.", "w": ["!ember 2; fighter vee 4", "!ember 2; weaver sine 4"]},
 	{"n": "Handle With Care", "obj": ["tanks", 3], "tip": "Fuel tanks explode. Shoot them when enemies are close.", "w": ["tank drift 3; fighter line 4", "tank drift 3; raider pincer 4"]},
-	{"n": "Backdraft", "obj": ["combo", 18], "w": ["cinder dive 4; !flare 2", "tank drift 2; cinder pincer 4; !flare 2"]},
+	{"n": "Backdraft", "obj": ["kills", 4], "w": ["cinder dive 4; !flare 2", "tank drift 2; cinder pincer 4; !flare 2"]},
 	{"n": "The Foreman", "obj": ["time", 65], "elite": true, "w": ["tank drift 3; weaver sine 4", "elite hold 1 swift; !ember 2"]},
 	{"n": "Chain Reaction", "obj": ["tanks", 5], "w": ["tank drift 4; fighter vee 5", "tank drift 3; gunship hold 1", "!treasure 1; cinder dive 5"]},
-	{"n": "Solar Wind", "obj": ["ember", 7], "w": ["!ember 3; raider dive 4; !flare 2", "!row 2; fighter vee 5", "!ember 2; !flare 3; weaver sine 5"]},
+	{"n": "Solar Wind", "obj": ["ember", 6], "w": ["!ember 3; raider dive 4; !flare 2", "!row 2; fighter vee 5", "!ember 2; !flare 3; weaver sine 5"]},
 	{"n": "Slag Run", "obj": ["shield", 1], "w": ["cinder pincer 5; tank drift 2", "gunship hold 1; !flare 2", "cinder dive 6; !row 2"]},
-	{"n": "Heatstroke", "obj": ["combo", 30], "w": ["!storm 8; !flare 2", "raider pincer 6; tank drift 3", "gunship hold 2; !ember 2"]},
+	{"n": "Heatstroke", "obj": ["combo", 6], "w": ["!storm 8; !flare 2", "raider pincer 6; tank drift 3", "gunship hold 2; !ember 2"]},
 	{"n": "The Ember Tyrant", "obj": ["time", 110], "boss": true, "w": ["cinder dive 4; tank drift 2"]},
 	# --- Sector 3: Violet Nursery. Priority targets and swarms. ---
 	{"n": "Soft Tissue", "obj": ["nohatch", 1], "tip": "Pods hatch when their ring closes. Pop them first for crystals.", "w": ["pod scatter 2; fighter line 3", "pod scatter 3; weaver sine 4"]},
-	{"n": "Swarm Season", "obj": ["combo", 25], "w": ["swarm swarm 8; weaver sine 4", "pod scatter 3; swarm swarm 8"]},
+	{"n": "Swarm Season", "obj": ["combo", 12], "w": ["swarm swarm 8; weaver sine 4", "pod scatter 3; swarm swarm 8"]},
 	{"n": "Nest Mother", "obj": ["time", 55], "tip": "Brood Mothers birth swarmlets until you kill them. Focus them down.", "w": ["brood hold 1; fighter line 3", "pod scatter 3; raider dive 4"]},
 	{"n": "Spawning Ground", "obj": ["nohatch", 1], "w": ["pod scatter 4; mine scatter 2", "swarm swarm 10; pod scatter 3"]},
 	{"n": "The Matriarch", "obj": ["time", 70], "elite": true, "w": ["pod scatter 3; weaver sine 5", "elite hold 1 regen; swarm swarm 8"]},
 	{"n": "Minefield Garden", "obj": ["nohatch", 1], "w": ["mine scatter 4; pod scatter 3", "!treasure 1; weaver sine 6; mine scatter 3", "brood hold 1; mine scatter 2"]},
-	{"n": "Overgrowth", "obj": ["crystals", 26], "w": ["brood hold 1; pod scatter 2", "brood hold 2", "swarm swarm 12; pod scatter 4"]},
+	{"n": "Overgrowth", "obj": ["crystals", 14], "w": ["brood hold 1; pod scatter 2", "brood hold 2", "swarm swarm 12; pod scatter 4"]},
 	{"n": "Pollen Storm", "obj": ["shield", 1], "w": ["!storm 8; swarm swarm 8", "weaver sine 6; pod scatter 4", "mine scatter 4; raider pincer 6"]},
-	{"n": "Hatchery", "obj": ["combo", 45], "w": ["pod scatter 5; swarm swarm 10", "brood hold 2; pod scatter 3", "swarm swarm 14; gunship hold 1"]},
+	{"n": "Hatchery", "obj": ["combo", 25], "w": ["pod scatter 5; swarm swarm 10", "brood hold 2; pod scatter 3", "swarm swarm 14; gunship hold 1"]},
 	{"n": "The Orbital Hydra", "obj": ["time", 120], "boss": true, "w": ["pod scatter 3; swarm swarm 8"]},
 	# --- Sector 4: Pale Graveyard. Finish what you start. ---
 	{"n": "Do Not Disturb", "obj": ["husks", 2], "tip": "Revenants leave a frozen husk. Shatter it or they get back up.", "w": ["revenant line 3", "revenant vee 4; rocks rain 4"]},
-	{"n": "Deep Freeze", "obj": ["crystals", 14], "tip": "Frost slows every shot inside it, yours and theirs.", "w": ["!frost 2; fighter vee 4", "!frost 2; revenant line 4"]},
+	{"n": "Deep Freeze", "obj": ["kills", 6], "tip": "Frost slows every shot inside it, yours and theirs.", "w": ["!frost 2; fighter vee 4", "!frost 2; revenant line 4"]},
 	{"n": "Standing Watch", "obj": ["shield", 1], "tip": "Sentinels aim long bursts. When the barrel flashes, move.", "w": ["sentinel hold 2; wreck drift 2", "sentinel hold 2; revenant line 3"]},
-	{"n": "Graveshift", "obj": ["husks", 5], "w": ["revenant column 5; !frost 1", "sentinel hold 2; revenant vee 5"]},
+	{"n": "Graveshift", "obj": ["husks", 4], "w": ["revenant column 5; !frost 1", "sentinel hold 2; revenant vee 5"]},
 	{"n": "The Quartermaster", "obj": ["time", 75], "elite": true, "w": ["sentinel hold 2; weaver sine 5", "elite hold 1 volatile; revenant line 3"]},
-	{"n": "Ice Shelf", "obj": ["crystals", 26], "w": ["wreck drift 4; sentinel hold 2", "!frost 3; gunship hold 1", "!treasure 1; revenant vee 5; wreck drift 2"]},
-	{"n": "They Keep Coming", "obj": ["husks", 9], "w": ["revenant line 5", "revenant vee 6; raider dive 4", "revenant column 6; revenant line 4"]},
-	{"n": "Cold Open", "obj": ["combo", 35], "w": ["!ambush raider 6; !frost 2", "gunship hold 2; revenant line 4", "!ambush fighter 6; sentinel hold 2"]},
+	{"n": "Ice Shelf", "obj": ["crystals", 10], "w": ["wreck drift 4; sentinel hold 2", "!frost 3; gunship hold 1", "!treasure 1; revenant vee 5; wreck drift 2"]},
+	{"n": "They Keep Coming", "obj": ["husks", 4], "w": ["revenant line 5", "revenant vee 6; raider dive 4", "revenant column 6; revenant line 4"]},
+	{"n": "Cold Open", "obj": ["graze", 8], "w": ["!ambush raider 6; !frost 2", "gunship hold 2; revenant line 4", "!ambush fighter 6; sentinel hold 2"]},
 	{"n": "Dead Calm", "obj": ["shield", 1], "w": ["sentinel hold 3; !frost 2", "gunship hold 1; sentinel hold 2", "revenant vee 6; mine scatter 4"]},
 	{"n": "The Pale Regent", "obj": ["time", 120], "boss": true, "w": ["revenant vee 4; sentinel hold 1"]},
 	# --- Sector 5: Crimson Front. A war you are caught inside. ---
-	{"n": "Wrong Neighbourhood", "obj": ["combo", 25], "tip": "Red bars across the screen are broadsides. Dodge up or down.", "w": ["bomber line 2; raider dive 4", "!row 2; fighter vee 5; raider pincer 4"]},
+	{"n": "Wrong Neighbourhood", "obj": ["kills", 4], "tip": "Red bars across the screen are broadsides. Dodge up or down.", "w": ["bomber line 2; raider dive 4", "!row 2; fighter vee 5; raider pincer 4"]},
 	{"n": "Evacuation", "obj": ["escort", 1], "tip": "Keep the hauler alive. It blocks shots, and each hit costs it dearly.", "w": ["!escort 1; fighter vee 5; raider dive 4", "bomber line 2; fighter line 4"]},
 	{"n": "Crossing Fire", "obj": ["shield", 1], "tip": "Frigates cross the arena. Stay out of their firing lanes.", "w": ["frigate side 1; raider dive 4", "frigate side 1; bomber line 2"]},
-	{"n": "Carpet Bombing", "obj": ["crystals", 22], "w": ["bomber vee 3; raider pincer 5", "bomber line 3; !row 2", "!treasure 1; bomber vee 4"]},
+	{"n": "Carpet Bombing", "obj": ["kills", 6], "w": ["bomber vee 3; raider pincer 5", "bomber line 3; !row 2", "!treasure 1; bomber vee 4"]},
 	{"n": "Commodore Vex", "obj": ["time", 75], "elite": true, "w": ["frigate side 1; fighter vee 5", "elite hold 2 shielded"]},
 	{"n": "Last Convoy", "obj": ["escort", 1], "w": ["!escort 1; raider pincer 6; bomber line 2", "fighter vee 6; gunship hold 1", "raider dive 6; bomber line 2"]},
-	{"n": "Broadside", "obj": ["combo", 45], "w": ["frigate side 2; raider dive 4", "!row 3; bomber vee 3", "frigate side 2; gunship hold 1"]},
+	{"n": "Broadside", "obj": ["graze", 8], "w": ["frigate side 2; raider dive 4", "!row 3; bomber vee 3", "frigate side 2; gunship hold 1"]},
 	{"n": "No Man's Sky", "obj": ["shield", 1], "w": ["!ambush raider 8; bomber line 2", "gunship hold 2; frigate side 1", "!row 3; fighter vee 6; mine scatter 3"]},
 	{"n": "Fall Back", "obj": ["escort", 1], "w": ["!escort 1; frigate side 1; raider dive 5", "bomber vee 4; gunship hold 1", "frigate side 2; weaver sine 6"]},
 	{"n": "The Crimson Admiral", "obj": ["time", 130], "boss": true, "w": ["bomber line 2; raider dive 4"]},
 	# --- Sector 6: Sunken Core. Everything you learned, under strange gravity. ---
-	{"n": "Downhill", "obj": ["crystals", 20], "tip": "Gravity wells bend every shot and pull your ship. Stay on the outside of the curve.", "w": ["!well 1; fighter vee 5", "!well 1; weaver sine 5"]},
-	{"n": "Phase Shift", "obj": ["combo", 30], "tip": "Wraiths can only be hit while they are solid.", "w": ["wraith line 3; raider dive 4", "wraith vee 4; !well 1"]},
+	{"n": "Downhill", "obj": ["kills", 5], "tip": "Gravity wells bend every shot and pull your ship. Stay on the outside of the curve.", "w": ["!well 1; fighter vee 5", "!well 1; weaver sine 5"]},
+	{"n": "Phase Shift", "obj": ["kills", 3], "tip": "Wraiths can only be hit while they are solid.", "w": ["wraith line 3; raider dive 4", "wraith vee 4; !well 1"]},
 	{"n": "Event Horizon", "obj": ["shield", 1], "w": ["!well 2; wraith line 3", "!spokes 1; fighter vee 5", "!well 1; gunship hold 1"]},
-	{"n": "The Long Way Down", "obj": ["crystals", 34], "w": ["!spokes 1; rocks rain 8", "wraith vee 5; mine scatter 3", "!treasure 1; !well 2; raider pincer 6"]},
+	{"n": "The Long Way Down", "obj": ["kills", 8], "w": ["!spokes 1; rocks rain 8", "wraith vee 5; mine scatter 3", "!treasure 1; !well 2; raider pincer 6"]},
 	{"n": "The Herald", "obj": ["time", 80], "elite": true, "w": ["wraith vee 5; !well 1", "elite hold 2 regen; !spokes 1"]},
-	{"n": "Every Fleet", "obj": ["combo", 50], "w": ["brood hold 1; frigate side 1", "sentinel hold 2; revenant vee 5", "gunship hold 2; cinder pincer 5"]},
+	{"n": "Every Fleet", "obj": ["combo", 12], "w": ["brood hold 1; frigate side 1", "sentinel hold 2; revenant vee 5", "gunship hold 2; cinder pincer 5"]},
 	{"n": "Inversion", "obj": ["shield", 1], "w": ["!well 2; !spokes 1", "wraith vee 6; !well 1", "!row 3; !flare 3; gunship hold 1"]},
 	{"n": "Terminal Velocity", "obj": ["time", 80], "w": ["!storm 10; !well 1", "raider pincer 8; wraith line 4", "frigate side 2; !spokes 1"]},
-	{"n": "The Last Lock", "obj": ["combo", 60], "w": ["elite hold 1 swift; wraith line 4", "elite hold 1 volatile; !well 1", "gunship hold 2; !spokes 1; revenant vee 5"]},
+	{"n": "The Last Lock", "obj": ["graze", 15], "w": ["elite hold 1 swift; wraith line 4", "elite hold 1 volatile; !well 1", "gunship hold 2; !spokes 1; revenant vee 5"]},
 	{"n": "The Sunken Core", "obj": ["time", 150], "boss": true, "w": ["wraith vee 4; !well 1"]},
 ]
 
 # Side missions branch off the map after a sector's elite. Hard rules, a blueprint for the win.
 const SIDE := {
-	101: {"n": "Black Box: Dead Reckoning", "sector": 1, "reward": "bp_seeker", "mutators": ["brittle"], "w": ["wreck drift 3; rocks rain 6", "fighter vee 5; wreck drift 2"], "obj": ["crystals", 12]},
-	102: {"n": "Black Box: Controlled Burn", "sector": 2, "reward": "bp_burn", "mutators": ["noregen"], "w": ["tank drift 4; fighter vee 5", "!ember 2; !flare 3; cinder dive 5"], "obj": ["tanks", 4]},
+	101: {"n": "Black Box: Dead Reckoning", "sector": 1, "reward": "bp_seeker", "mutators": ["brittle"], "w": ["wreck drift 3; rocks rain 6", "fighter vee 5; wreck drift 2"], "obj": ["crystals", 6]},
+	102: {"n": "Black Box: Controlled Burn", "sector": 2, "reward": "bp_burn", "mutators": ["noregen"], "w": ["tank drift 4; fighter vee 5", "!ember 2; !flare 3; cinder dive 5"], "obj": ["tanks", 3]},
 	103: {"n": "Black Box: Sample Return", "sector": 3, "reward": "bp_arc", "mutators": ["swarm"], "w": ["pod scatter 4; swarm swarm 10", "brood hold 2; pod scatter 3"], "obj": ["nohatch", 1]},
-	104: {"n": "Black Box: Cold Storage", "sector": 4, "reward": "bp_cryo", "mutators": ["frenzy"], "w": ["revenant vee 5; sentinel hold 2", "!frost 3; revenant column 6"], "obj": ["husks", 5]},
+	104: {"n": "Black Box: Cold Storage", "sector": 4, "reward": "bp_cryo", "mutators": ["frenzy"], "w": ["revenant vee 5; sentinel hold 2", "!frost 3; revenant column 6"], "obj": ["husks", 3]},
 	105: {"n": "Black Box: Mutiny", "sector": 5, "reward": "bp_spike", "mutators": ["elites"], "w": ["bomber vee 3; raider pincer 6", "!escort 1; frigate side 1; fighter vee 5"], "obj": ["escort", 1]},
 	106: {"n": "Black Box: Null Point", "sector": 6, "reward": "bp_phoenix", "mutators": ["blackout"], "w": ["wraith vee 5; !well 2", "!spokes 1; gunship hold 2"], "obj": ["shield", 1]},
 }
@@ -154,6 +155,8 @@ const GROUPS := {
 
 const OBJECTIVE_TEXT := {
 	"crystals": "Collect %d crystals",
+	"kills": "Destroy %d enemies",
+	"graze": "Graze %d enemy shots",
 	"combo": "Reach a combo of %d",
 	"time": "Finish within %d seconds",
 	"wrecks": "Break %d wrecks",
@@ -186,6 +189,82 @@ static func level_name(level: int) -> String:
 	if level >= SIDE_FIRST:
 		return str(SIDE[level].n)
 	return str(CAMPAIGN[level - 1].n)
+
+## What a level contains, counted from its waves: how many hostiles can be destroyed, how many crystals they are worth
+## on average, and how many of each special target appear. Star goals are checked against this (see STAR_SHARE and the
+## tests), so no level can ask for more than it holds.
+##
+## Estimates, not promises: a storm is counted at half its rocks (they fall fast), a courier at half its crystals (it can
+## get away), a Brood Mother at four swarmlets, and every armed enemy at two volleys.
+static func supply(level: int) -> Dictionary:
+	var def: Dictionary = build(level)
+	var out := {"kills": 0.0, "crystals": 0.0, "wrecks": 0, "tanks": 0, "revenants": 0, "pods": 0, "shots": 0.0, "waves": []}
+	for wave in def.waves:
+		var wave_kills := 0.0
+		for g in wave:
+			if g.has("event"):
+				match str(g.event):
+					"storm":
+						var rocks: float = float(g.amount) / 0.32 * 0.5
+						wave_kills += rocks * 1.36
+						out.crystals += rocks * 0.2
+					"ambush":
+						wave_kills += float(g.count)
+						out.crystals += float(g.count) * float(Enemies.DB[str(g.kind)].drop)
+					"treasure":
+						wave_kills += 0.5
+						out.crystals += 6.0
+				continue
+			var kind: String = str(g.kind)
+			var count := float(g.count)
+			if kind == "rocks":
+				# The rain mix: about a quarter are boulders, which break into two pebbles.
+				wave_kills += count * (1.0 if level <= 2 else 1.48)
+				out.crystals += count * (0.14 if level <= 2 else 0.25)
+				continue
+			if kind == "swarm":
+				kind = "swarmlet"
+			var info: Dictionary = Enemies.DB[kind]
+			if info.get("ally", false):
+				continue
+			wave_kills += count
+			var pieces := 1.0
+			if info.get("heavy", false) or info.get("cover", false):
+				pieces = 4.0
+			elif kind == "pod":
+				pieces = 3.0
+			out.crystals += count * float(info.drop) * pieces
+			# Shots to graze: every armed enemy is counted for two volleys.
+			out.shots += count * 2.0 * float(VOLLEY.get(str(info.shot), 0))
+			match kind:
+				"wreck":
+					out.wrecks += int(count)
+				"tank":
+					out.tanks += int(count)
+				"revenant":
+					out.revenants += int(count)
+				"pod":
+					out.pods += int(count)
+				"brood":
+					wave_kills += count * 4.0
+					out.crystals += count * 4.0 * 0.08
+		(out.waves as Array).append(wave_kills)
+		out.kills += wave_kills
+	return out
+
+## How many shots one volley of each enemy attack puts in the air.
+const VOLLEY := {"aimed": 1, "twin": 2, "fan": 5, "lance": 5, "bomb": 3, "broadside": 5, "elite": 17}
+
+## The largest share of a level's supply that a bonus star may ask for.
+const STAR_SHARE := {"crystals": 0.6, "combo": 0.6, "kills": 0.75, "wrecks": 0.75, "tanks": 0.75, "husks": 0.5, "graze": 0.3}
+
+## The most a star goal of this type may ask for on this level, or -1 when the type has no countable supply.
+static func star_limit(level: int, kind: String) -> int:
+	if not STAR_SHARE.has(kind):
+		return -1
+	var sup := supply(level)
+	var have: float = {"crystals": float(sup.crystals), "combo": float(sup.kills), "kills": float(sup.kills), "wrecks": float(sup.wrecks), "tanks": float(sup.tanks), "husks": float(sup.revenants), "graze": float(sup.shots)}[kind]
+	return int(floor(have * float(STAR_SHARE[kind]) + 0.001))
 
 static func objective_text(obj: Array) -> String:
 	if obj.is_empty():
@@ -294,7 +373,21 @@ static func build_endless(wave: int) -> Dictionary:
 		groups = make_wave(rng, 8.0 + float(wave) * 0.8, s, float(diff.d))
 		if wave > 2:
 			add_sector_event(groups, rng, s)
-	return {"level": mini(wave * 2, LEVEL_COUNT), "name": "Rift", "sector": s, "boss": boss, "elite": false, "waves": [groups], "scale": diff, "boss_id": s if boss else 0, "reward": 8 + wave * 3, "obj": [], "tip": "", "mutators": rift_dials(wave), "side_reward": ""}
+	# Every fifteenth floor belongs to a Rift Lord instead of the sector boss.
+	var boss_id := s if boss else 0
+	if boss and wave % 15 == 0:
+		boss_id = Bosses.SECTOR_BOSSES + 1 + (wave / 15 - 1) % (Bosses.LIST.size() - Bosses.SECTOR_BOSSES)
+	return {"level": mini(wave * 2, LEVEL_COUNT), "name": "Rift", "sector": s, "boss": boss, "elite": false, "waves": [groups], "scale": diff, "boss_id": boss_id, "reward": 8 + wave * 3, "obj": [], "tip": "", "mutators": rift_dials(wave), "side_reward": ""}
+
+## One fight of Boss Rush: nothing but the boss. Each boss is as strong as it is in its own sector, but never stronger
+## than the furthest level the player has reached (`reached`), so the mode is fair the day it unlocks.
+static func build_rush(stage: int, reached: int) -> Dictionary:
+	var id: int = Bosses.RUSH_ORDER[clampi(stage, 1, Bosses.RUSH_ORDER.size()) - 1]
+	var s: int = id if id <= SECTOR_COUNT else (4 if id == Bosses.SECTOR_BOSSES + 1 else 6)
+	var own_level: int = id * LEVELS_PER_SECTOR if id <= SECTOR_COUNT else LEVEL_COUNT - 10
+	var scale_level := clampi(mini(own_level, maxi(reached, LEVELS_PER_SECTOR)), 1, LEVEL_COUNT)
+	return {"level": scale_level, "name": "Boss Rush", "sector": s, "boss": true, "elite": false, "waves": [[]], "scale": difficulty(scale_level), "boss_id": id,
+		"reward": 30 + stage * 12, "obj": [], "tip": "", "mutators": [], "side_reward": ""}
 
 ## A single Expedition node. tier grows with each layer of the run.
 static func build_node(seed_value: int, sector_num: int, tier: int, node_type: String) -> Dictionary:

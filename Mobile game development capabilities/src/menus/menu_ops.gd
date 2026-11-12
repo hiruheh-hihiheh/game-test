@@ -19,6 +19,17 @@ func on_ui(id: String) -> void:
 		var kind := id.substr(7)
 		danger_on[kind] = not bool(danger_on[kind])
 		Audio.play("ui_click")
+	elif id == "supply_claim":
+		var got := Rewards.claim_streak()
+		if not got.is_empty():
+			Audio.play("ui_buy")
+			Fade.toast("DAILY SUPPLY", got)
+	elif id == "vault_claim":
+		var tier := Rewards.vault_claimed() + 1
+		var got := Rewards.claim_vault()
+		if not got.is_empty():
+			Audio.play("unlock")
+			Fade.toast("STAR VAULT %d" % (tier * Rewards.VAULT_STEP), got)
 	elif id.begins_with("claim_"):
 		if Meta.claim_contract(int(id.substr(6))):
 			Audio.play("ui_buy")
@@ -36,6 +47,9 @@ func on_ui(id: String) -> void:
 			"weekly":
 				var d: Dictionary = Meta.weekly_challenge()
 				m.launch({"mode": "weekly", "level": d.level, "mutators": d.mutators, "reward": d.reward, "danger": _danger_for("weekly", d)})
+			"rush":
+				if rush_open():
+					m.launch({"mode": "rush", "level": Save.unlocked, "mutators": []})
 
 ## The featured contract of today's or this week's challenge, if the player switched it on.
 func featured_id(kind: String, data: Dictionary) -> String:
@@ -76,7 +90,64 @@ func _section(c: UILayer, x: float, y: float, text: String) -> float:
 	UI.outlined(c, text, Vector2(x + 4.0, y + 22.0), 21, UI.TEXT_DIM, true)
 	return y + 36.0
 
+## The seven-day supply run: one pip per day, the next reward spelled out, and a claim button when it is ready.
+func _paint_supply(c: UILayer, x: float, y: float, w: float) -> float:
+	var st := Rewards.streak()
+	var ready: bool = st.ready
+	var day := int(st.day)
+	var r := Rect2(x, y, w, 132.0)
+	var color: Color = UI.GOLD if ready else UI.CYAN
+	UI.panel(c, r, Color(0.03, 0.05, 0.12, 0.93), Color(color, 0.55), 14, 2)
+	UI.text(c, "DAILY SUPPLY", r.position + Vector2(22, 34), 22, UI.WHITE, true)
+	UI.text(c, "DAY %d OF 7" % day, r.position + Vector2(210, 34), 18, color, true)
+	var days := Rewards.STREAK.size()
+	var pw := (w - 230.0 - 6.0 * float(days - 1)) / float(days)
+	for i in range(days):
+		var got: bool = i < day - 1 or (i == day - 1 and not ready)
+		var pr := Rect2(r.position.x + 22.0 + float(i) * (pw + 6.0), r.position.y + 50.0, pw, 26.0)
+		c.draw_rect(pr, Color(UI.MINT, 0.85) if got else (Color(UI.GOLD, 0.35) if i == day - 1 else Color(0.2, 0.25, 0.36, 0.8)))
+		if Rewards.STREAK[i].has("gear"):
+			UI.star(c, pr.get_center(), 8.0, UI.WHITE if got else UI.GOLD)
+	var next: Dictionary = Rewards.STREAK[(day - 1) if ready else (day % days)]
+	var line := ("Today: " if ready else "Tomorrow: ") + Rewards.describe(next)
+	UI.fit_text(c, line, r.position + Vector2(22, 108), 19, 14, w - 230.0, UI.WHITE if ready else UI.TEXT_DIM)
+	var br := Rect2(r.end.x - 176, r.position.y + 34.0, 160, 66)
+	if ready:
+		c.button("supply_claim", br, "CLAIM", UI.GOLD, {"size": 24, "primary": true, "sound": ""})
+	else:
+		c.button("supply_done", br, "%dh" % (Meta.seconds_to_reset() / 3600 + 1), UI.CYAN, {"size": 22, "disabled": true})
+	return y + 144.0
+
+## A reward for every ten stars. Shows how far the next one is, so chasing a missing star always pays.
+func _paint_vault(c: UILayer, x: float, y: float, w: float) -> float:
+	var stars := Save.total_stars()
+	var claimed := Rewards.vault_claimed()
+	var ready := Rewards.vault_ready() > 0
+	var done := claimed >= Rewards.vault_tiers()
+	var tier := mini(claimed + 1, Rewards.vault_tiers())
+	var need := tier * Rewards.VAULT_STEP
+	var r := Rect2(x, y, w, 132.0)
+	var color: Color = UI.GOLD if ready else UI.CYAN
+	UI.panel(c, r, Color(0.03, 0.05, 0.12, 0.93), Color(color, 0.55), 14, 2)
+	UI.star(c, r.position + Vector2(36, 28), 13.0, UI.GOLD)
+	UI.text(c, "STAR VAULT", r.position + Vector2(58, 34), 22, UI.WHITE, true)
+	UI.text(c, "%d / %d" % [mini(stars, need), need] if not done else "COMPLETE", r.position + Vector2(210, 34), 18, color, true)
+	var from := (tier - 1) * Rewards.VAULT_STEP
+	UI.bar(c, Rect2(r.position + Vector2(22, 54), Vector2(w - 230.0, 18)), 1.0 if done else clampf(float(stars - from) / float(Rewards.VAULT_STEP), 0.0, 1.0), color)
+	var line := "Every star is collected" if done else ("Reward: " + Rewards.describe(Rewards.vault_reward(tier)))
+	UI.fit_text(c, line, r.position + Vector2(22, 108), 19, 14, w - 230.0, UI.WHITE if ready else UI.TEXT_DIM)
+	var br := Rect2(r.end.x - 176, r.position.y + 34.0, 160, 66)
+	if ready:
+		c.button("vault_claim", br, "CLAIM", UI.GOLD, {"size": 24, "primary": true, "sound": ""})
+	elif not done:
+		c.button("vault_wait", br, "%d MORE" % (need - stars), UI.CYAN, {"size": 20, "disabled": true})
+	return y + 144.0
+
 func _paint_today(c: UILayer, x: float, y: float, w: float) -> float:
+	y = _section(c, x, y, "REWARDS")
+	y = _paint_supply(c, x, y, w)
+	y = _paint_vault(c, x, y, w)
+	y += 8.0
 	var hours: int = Meta.seconds_to_reset() / 3600
 	y = _section(c, x, y, "DAILY CONTRACTS  ·  %dh LEFT" % hours)
 	var list: Array = Save.contracts.get("list", [])
@@ -105,7 +176,30 @@ func _paint_today(c: UILayer, x: float, y: float, w: float) -> float:
 	y = _challenge_card(c, x, y, w, "daily", "DAILY ANOMALY", daily, UI.MAGENTA)
 	var weekly: Dictionary = Meta.weekly_challenge()
 	y = _challenge_card(c, x, y, w, "weekly", "WEEKLY BOSS", weekly, UI.RED)
+	y = _paint_rush(c, x, y, w)
 	return y
+
+func rush_open() -> bool:
+	return Save.bosses_beaten.size() >= Bosses.RUSH_UNLOCK
+
+## Boss Rush: every boss in one flight, always available once three sector bosses have fallen.
+func _paint_rush(c: UILayer, x: float, y: float, w: float) -> float:
+	var open := rush_open()
+	var total: int = Bosses.RUSH_ORDER.size()
+	var r := Rect2(x, y, w, 150.0)
+	var color: Color = UI.GOLD if open else Color(0.45, 0.5, 0.62)
+	UI.panel(c, r, Color(color.darkened(0.82), 0.95), Color(color, 0.8), 16, 2)
+	UI.text(c, "BOSS RUSH", r.position + Vector2(22, 38), 25, UI.WHITE, true)
+	UI.fit_text(c, "All %d bosses in one flight, two of them found nowhere else." % total, r.position + Vector2(22, 68), 19, 14, w - 220.0, UI.TEXT_DIM)
+	UI.fit_text(c, "A module and a hull repair after every boss.", r.position + Vector2(22, 96), 18, 13, w - 220.0, UI.ORANGE, true)
+	var best: int = Meta.stat("rush_best")
+	var line := "BEST %d / %d" % [best, total] if best > 0 else "First clear: Legendary gear"
+	if not open:
+		line = "Opens after %d sector bosses (%d so far)" % [Bosses.RUSH_UNLOCK, Save.bosses_beaten.size()]
+	UI.fit_text(c, line, r.position + Vector2(22, 130), 18, 13, w - 220.0, UI.GOLD if open else UI.TEXT_DIM)
+	UI.enter_veil(c, r, float(m.screen_t), 5)
+	c.button("rush", Rect2(r.end.x - 176, r.position.y + 42.0, 160, 72), "FLY" if open else "LOCKED", color, {"primary": open, "size": 26 if open else 20, "disabled": not open})
+	return y + 162.0
 
 func _challenge_card(c: UILayer, x: float, y: float, w: float, id: String, title: String, data: Dictionary, color: Color) -> float:
 	var feat := featured_id(id, data) if Danger.unlocked() else ""

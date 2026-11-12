@@ -482,6 +482,55 @@ const art = {
     panel(g, arcBand(c[0], c[1], 590, 620, -Math.PI / 2 - 0.2, -Math.PI / 2 + 0.2, 20), [255, 210, 110], [190, 90, 30], { mirror: false, ow: 5, wear: 0, bevel: false });
     g.glow(256, 96, 50, [255, 190, 90], 0.4);
   },
+  // --- Rift Lords: bosses that only appear in the Rift and in Boss Rush ---
+  boss_eclipse_sun(g) {
+    // The bright twin: a burning disc with a corona of blades.
+    g.glow(256, 256, 250, [255, 190, 70], 0.4);
+    for (let i = 0; i < 12; i++) {
+      const a = i / 12 * Math.PI * 2, c = Math.cos(a), s = Math.sin(a), px = -s, py = c;
+      panel(g, [[256 + c * 150 + px * 26, 256 + s * 150 + py * 26], [256 + c * 236, 256 + s * 236], [256 + c * 150 - px * 26, 256 + s * 150 - py * 26]], [255, 226, 130], [200, 90, 20], { mirror: false, ow: 6, wear: 0.05 });
+    }
+    panel(g, ell(256, 256, 168, 168, 56), [255, 236, 150], [214, 96, 24], { mirror: false, ow: 11, scale: 0.06, wear: 0.2 });
+    panel(g, ell(256, 256, 118, 118, 48), [255, 250, 210], [255, 176, 60], { mirror: false, ow: 5, wear: 0, bevel: false });
+    for (let i = 0; i < 24; i++) {
+      const a = i / 24 * Math.PI * 2;
+      g.stroke([[256 + Math.cos(a) * 60, 256 + Math.sin(a) * 60], [256 + Math.cos(a) * 112, 256 + Math.sin(a) * 112]], false, 3, [200, 90, 20], 0.45);
+    }
+    g.fill(ell(256, 256, 44, 44, 28), () => [255, 255, 240]);
+    g.glow(256, 256, 120, [255, 240, 170], 0.8);
+  },
+  boss_eclipse_moon(g) {
+    // The dark twin: a cold armoured disc with a violet crescent.
+    g.glow(256, 256, 240, [130, 90, 255], 0.3);
+    panel(g, ell(256, 256, 190, 190, 60), [96, 92, 132], [16, 12, 34], { mirror: false, ow: 12, scale: 0.04, wear: 0.3, angle: 70 });
+    panel(g, ell(256, 256, 150, 150, 52), [58, 52, 96], [10, 8, 26], { mirror: false, ow: 6, wear: 0.2 });
+    panel(g, arcBand(256, 256, 120, 170, Math.PI * 0.62, Math.PI * 1.5, 26), [214, 190, 255], [96, 60, 200], { mirror: false, ow: 6, wear: 0, bevel: false });
+    for (const [x, y, r] of [[300, 220, 26], [226, 300, 18], [316, 316, 14], [250, 190, 12]]) panel(g, ell(x, y, r, r, 16), [34, 30, 62], [8, 6, 20], { mirror: false, ow: 4, wear: 0, bevel: false });
+    g.fill(ell(256, 256, 30, 30, 22), () => [200, 170, 255]);
+    g.glow(256, 256, 80, [160, 110, 255], 0.7);
+  },
+  boss_lancer(g) {
+    // A long hunting ship, nose down, with swept wings and a spinal cannon.
+    g.glow(256, 250, 230, [90, 255, 200], 0.18);
+    panel(g, [[256, 150], [300, 120], [470, 60], [500, 96], [420, 190], [330, 250], [300, 330]], [72, 96, 110], [14, 22, 34], { ow: 10, scale: 0.04, wear: 0.2 });
+    panel(g, [[256, 40], [316, 70], [336, 210], [306, 400], [256, 492], [206, 400], [176, 210], [196, 70]], [150, 176, 190], [30, 44, 62], { mirror: false, ow: 11, scale: 0.05, wear: 0.24, angle: 80 });
+    panel(g, [[256, 110], [292, 140], [296, 300], [256, 420], [216, 300], [220, 140]], [60, 84, 100], [12, 20, 30], { mirror: false, ow: 6 });
+    panel(g, [[256, 300], [272, 330], [256, 470], [240, 330]], [150, 255, 220], [30, 170, 130], { mirror: false, ow: 4, wear: 0, bevel: false });
+    panel(g, [[256, 150], [286, 176], [256, 240], [226, 176]], [255, 214, 120], [220, 90, 40], { mirror: false, ow: 5, wear: 0, bevel: false });
+    lights(g, [[430, 110], [380, 150]], 7, [90, 255, 200]);
+    line(g, [330, 130], [440, 96], 5, INK, 0.5);
+    flame(g, 216, 60, 26, 56, [200, 255, 240], [60, 220, 170]);
+    flame(g, 296, 60, 26, 56, [200, 255, 240], [60, 220, 170]);
+    g.glow(256, 196, 60, [255, 190, 90], 0.6);
+    g.glow(256, 460, 50, [120, 255, 210], 0.7);
+  },
+  boss_lancer_plate(g) {
+    // The guard plate carried in front of the Lancer: a curved energy-backed shield.
+    g.glow(256, 300, 220, [90, 255, 200], 0.22);
+    panel(g, arcBand(256, 60, 250, 320, Math.PI * 0.2, Math.PI * 0.8, 30), [176, 200, 214], [34, 50, 70], { mirror: false, ow: 11, scale: 0.05, wear: 0.22 });
+    panel(g, arcBand(256, 60, 272, 296, Math.PI * 0.24, Math.PI * 0.76, 26), [150, 255, 220], [30, 150, 130], { mirror: false, ow: 4, wear: 0, bevel: false });
+    lights(g, [[150, 330], [210, 366]], 6, [120, 255, 210]);
+  },
 };
 
 const only = process.argv[2];

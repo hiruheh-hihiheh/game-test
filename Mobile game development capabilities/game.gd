@@ -16,6 +16,8 @@ const BOSS_SCRIPTS := [
 	preload("res://src/combat/bosses/pale_regent.gd"),
 	preload("res://src/combat/bosses/crimson_admiral.gd"),
 	preload("res://src/combat/bosses/sunken_core.gd"),
+	preload("res://src/combat/bosses/twin_eclipse.gd"),
+	preload("res://src/combat/bosses/void_lancer.gd"),
 ]
 
 enum Phase { INTRO, PLAYING, WARNING, BOSS_INTRO, BOSS, UPGRADE, CLEAR, DEFEAT, PAUSED, RESUME }
@@ -156,7 +158,10 @@ var combo := 0
 var combo_timer := 0.0
 var best_combo := 0
 var kills := 0
-var tracker := {"crystals": 0, "wrecks": 0, "ember": 0.0, "tanks": 0, "hatched": 0, "husks": 0, "shield_broke": false, "escort_ok": true, "escort_seen": false}
+var rush_beaten := 0
+var drop_bank := 0.5
+var star_announced := false
+var tracker := {"kills": 0, "grazes": 0, "crystals": 0, "wrecks": 0, "ember": 0.0, "tanks": 0, "hatched": 0, "husks": 0, "shield_broke": false, "escort_ok": true, "escort_seen": false}
 var threat := 0.0
 
 # Overlays
@@ -244,6 +249,8 @@ func _ready() -> void:
 	match mode:
 		"endless":
 			title = "RIFT"
+		"rush":
+			title = "BOSS RUSH"
 		"expedition":
 			title = "EXPEDITION"
 		"daily":
@@ -269,6 +276,9 @@ func _load_level() -> void:
 		"endless":
 			endless_wave = 1
 			level = Levels.build_endless(endless_wave)
+		"rush":
+			endless_wave = clampi(int(Save.session.get("stage", 1)), 1, Bosses.RUSH_ORDER.size())
+			level = Levels.build_rush(endless_wave, Save.unlocked)
 		"expedition":
 			var node: Dictionary = Save.expedition.get("current", {})
 			level = Levels.build_node(int(node.get("seed", 1)), int(Save.expedition.get("sector", 1)), int(node.get("tier", 1)), str(node.get("type", "battle")))
@@ -461,10 +471,12 @@ func _tick(real_dt: float) -> void:
 		hitstop -= real_dt
 		dt = 0.0
 	fx.update(real_dt)
-	if combo_timer > 0.0:
+	# A combo only runs down while there is something to shoot, so a quiet moment between waves never breaks it.
+	if combo_timer > 0.0 and _combo_running():
 		combo_timer -= dt
 		if combo_timer <= 0.0:
 			combo = 0
+	_watch_objective()
 	if echo_t > 0.0:
 		echo_t -= dt
 		if echo_t <= 0.0:
@@ -496,6 +508,8 @@ func _tick(real_dt: float) -> void:
 		Phase.BOSS:
 			flight_time += dt
 			_update_world(dt)
+			# What a boss summons (rocks, raiders, mines, its own escorts) arrives during the fight.
+			_advance_pending(dt)
 			if boss != null:
 				boss.update(dt)
 			_update_threat(real_dt)
@@ -935,6 +949,10 @@ func _on_bullet_hit(at: Vector2, damage: float) -> void:
 
 func _on_graze(at: Vector2) -> void:
 	Meta.count("graze")
+	tracker.grazes = int(tracker.grazes) + 1
+	if str((level.get("obj", [""]) as Array)[0]) == "graze":
+		fx.spark(at, Vector2.ZERO, 0.22, UI.GOLD, 15.0)
+		Audio.play("pickup", -16.0, 1.7)
 	var slip: bool = str(ship.trait) == "SLIPSTREAM"
 	if slip or float(s.graze) > 0.0:
 		add_energy(1.6 * (1.0 + float(s.graze)))
@@ -1117,12 +1135,7 @@ func _update_spawning(dt: float) -> void:
 				_run_event(g)
 			else:
 				_spawn_group(g)
-	for i in range(pending.size() - 1, -1, -1):
-		var entry: Dictionary = pending[i]
-		entry.t -= dt
-		if float(entry.t) <= 0.0:
-			pending.remove_at(i)
-			spawn_enemy(entry)
+	_advance_pending(dt)
 	if group_queue.is_empty() and pending.is_empty() and storm_t <= 0.0 and _hostiles_left() == 0:
 		if clear_wait < 0.0:
 			clear_wait = 0.9
@@ -1134,6 +1147,14 @@ func _update_spawning(dt: float) -> void:
 		if clear_wait <= 0.0:
 			finish_slowed = false
 			_on_wave_cleared()
+
+func _advance_pending(dt: float) -> void:
+	for i in range(pending.size() - 1, -1, -1):
+		var entry: Dictionary = pending[i]
+		entry.t -= dt
+		if float(entry.t) <= 0.0:
+			pending.remove_at(i)
+			spawn_enemy(entry)
 
 func _hostiles_left() -> int:
 	var n := 0
@@ -1616,6 +1637,8 @@ func _hit_enemy(e: Dictionary, damage: float, at: Vector2, crit_hit: bool, secon
 	if e.dead or e.ghost or e.ally:
 		return
 	e.idle = 0.0
+	if not secondary:
+		combo_keep()
 	var power := clampf(damage / 1.1, 0.7, 2.0) * (1.25 if crit_hit else 1.0)
 	if float(e.eshield) > 0.0:
 		e.eshield -= damage
@@ -1666,6 +1689,7 @@ func _kill_enemy(e: Dictionary, by_player: bool) -> void:
 		fx.explode(pos, "medium", size, "fire")
 		return
 	if by_player:
+		tracker.kills = int(tracker.kills) + 1
 		combo += 1
 		best_combo = maxi(best_combo, combo)
 		combo_timer = 2.8
@@ -1757,9 +1781,13 @@ func _explosion(pos: Vector2, radius: float, damage: float, skip_id: int) -> voi
 		hurt_player(26.0)
 
 func _drop_loot(e: Dictionary) -> void:
-	var chance: float = e.drop
-	if randf() > chance and not e.treasure:
-		return
+	# Each kill adds its drop chance to a bank and a crystal drops when the bank fills. The average is exactly the drop
+	# chance, but there are no dry streaks, so "collect N crystals" depends on what you destroy and not on luck.
+	if not e.treasure:
+		drop_bank += float(e.drop)
+		if drop_bank < 1.0:
+			return
+		drop_bank -= 1.0
 	if not Save.tutorial_seen("crystal"):
 		Save.mark_tutorial("crystal")
 		hud.coach("Crystals buy permanent upgrades in the Hangar", 4.0)
@@ -1825,6 +1853,16 @@ func _on_wave_cleared() -> void:
 		boss_done = false
 		_begin_upgrade()
 		return
+	if mode == "rush":
+		# Boss Rush: the boss, a module, the next boss. The last boss ends the run.
+		if boss == null and not boss_done:
+			_begin_warning()
+		elif endless_wave >= Bosses.RUSH_ORDER.size():
+			_level_complete()
+		else:
+			boss_done = false
+			_begin_upgrade()
+		return
 	if wave_index + 1 < (level.waves as Array).size():
 		_begin_upgrade()
 	elif level.boss and boss == null and not boss_done:
@@ -1849,6 +1887,8 @@ func _spawn_boss() -> void:
 	var hp_scale := hp_mult
 	if mode == "endless":
 		hp_scale *= 0.45 + float(endless_wave) * 0.08
+	elif mode == "rush":
+		hp_scale *= 0.6
 	elif mode == "expedition":
 		hp_scale *= 0.8
 	b.setup(self, Bosses.LIST[index], hp_scale)
@@ -1876,6 +1916,13 @@ func on_boss_destroyed() -> void:
 	boss_done = true
 	if mode == "endless":
 		Audio.music_layered(str(Levels.SECTORS[sector_num - 1].music), 1.0)
+	elif mode == "rush":
+		rush_beaten += 1
+		Meta.peak("rush_best", rush_beaten)
+		run_salvage += 20 + endless_wave * 6
+		if hull < max_hull:
+			hull += 1
+			fx.text("HULL REPAIRED", player_pos + Vector2(0, -120.0), 26, UI.MINT)
 	phase = Phase.PLAYING
 	phase_t = 0.0
 	group_queue.clear()
@@ -1963,6 +2010,13 @@ func _after_card() -> void:
 		scale_cfg = level.scale
 		_apply_mutators()
 		_recompute()
+		_start_wave(0)
+	elif mode == "rush":
+		endless_wave += 1
+		level = Levels.build_rush(endless_wave, Save.unlocked)
+		scale_cfg = level.scale
+		_recompute()
+		Audio.music_layered(str(Levels.SECTORS[int(level.sector) - 1].music), 1.0)
 		_start_wave(0)
 	else:
 		_start_wave(wave_index + 1)
@@ -2153,6 +2207,37 @@ func _bank() -> void:
 	Meta.sync_collection_stats()
 	Save.save_data()
 
+## Landing a hit keeps a combo alive, so a tough target does not break it: only stopping, or losing a hull, does.
+func combo_keep() -> void:
+	if combo > 0:
+		combo_timer = maxf(combo_timer, 2.0)
+
+## True while a hostile that can be shot is on screen (or a boss is out). The combo timer only runs then.
+func _combo_running() -> bool:
+	if phase != Phase.PLAYING and phase != Phase.BOSS:
+		return false
+	if boss != null:
+		return true
+	for e in enemies:
+		if not e.dead and not e.ally and not e.cover and float(e.pos.y) > top and float(e.pos.y) < H and float(e.pos.x) > 0.0 and float(e.pos.x) < W:
+			return true
+	return false
+
+## Goals that are earned by doing something (not by avoiding something) are announced the moment they are reached.
+const COUNTED_GOALS := ["crystals", "kills", "graze", "combo", "wrecks", "ember", "tanks", "husks"]
+
+func _watch_objective() -> void:
+	if star_announced or phase not in COMBAT_PHASES or mode not in ["campaign", "side"]:
+		return
+	var obj: Array = level.get("obj", [])
+	if obj.is_empty() or str(obj[0]) not in COUNTED_GOALS or not objective_done():
+		return
+	star_announced = true
+	Audio.play("star_3", -4.0)
+	Save.haptic(25)
+	fx.text("BONUS STAR", player_pos + Vector2(0, -110.0), 30, UI.GOLD)
+	fx.ring(player_pos, 0.5, 30.0, 170.0, UI.GOLD, 5.0)
+
 func objective_done() -> bool:
 	var obj: Array = level.get("obj", [])
 	if obj.is_empty():
@@ -2161,6 +2246,10 @@ func objective_done() -> bool:
 	match str(obj[0]):
 		"crystals":
 			return int(tracker.crystals) >= n
+		"kills":
+			return int(tracker.kills) >= n
+		"graze":
+			return int(tracker.grazes) >= n
 		"combo":
 			return best_combo >= n
 		"time":
@@ -2189,6 +2278,10 @@ func objective_progress() -> String:
 	match str(obj[0]):
 		"crystals":
 			return "%d/%d" % [tracker.crystals, n]
+		"kills":
+			return "%d/%d" % [tracker.kills, n]
+		"graze":
+			return "%d/%d" % [tracker.grazes, n]
 		"combo":
 			return "%d/%d" % [best_combo, n]
 		"time":
@@ -2202,6 +2295,15 @@ func objective_progress() -> String:
 		"husks":
 			return "%d/%d" % [tracker.husks, n]
 	return ""
+
+## What the bonus goal came to when the level ended, for the results screen ("9/12", "71s").
+func objective_result() -> String:
+	var obj: Array = level.get("obj", [])
+	if obj.is_empty():
+		return ""
+	if str(obj[0]) == "time":
+		return "%ds" % int(ceil(flight_time))
+	return objective_progress()
 
 func _level_complete() -> void:
 	if phase == Phase.CLEAR:
@@ -2251,6 +2353,14 @@ func _level_complete() -> void:
 				rewards.append({"title": "CHALLENGE COMPLETE", "detail": "+%d bonus salvage" % bonus})
 		"expedition":
 			Expedition.on_node_cleared(self)
+		"rush":
+			# Every boss in one flight: a guaranteed drop, better the first time.
+			var first_clear := Meta.stat("rush_clear") == 0
+			Meta.count("rush_clear")
+			add_loot(Gear.roll_item(loot_rng, loot_power() + 2.0, 2.0, Gear.LEGENDARY if first_clear else Gear.EPIC))
+			bonus_parts += 60
+			bonus_xp += 300
+			rewards.append({"title": "BOSS RUSH COMPLETE", "detail": "All %d bosses down. Gear and +60 parts" % Bosses.RUSH_ORDER.size()})
 	run_salvage += result_reward
 	_pay_danger()
 	_bank()

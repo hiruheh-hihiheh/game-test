@@ -33,4 +33,21 @@ const LIST := [
 		"stage_lines": ["The rings are accelerating", "Everything is falling inward"],
 		"death_title": "THE STARS ARE FREE", "death_line": "It is finally over",
 		"lore": "It isn't a planet or a ship. It reached up and pulled the stars down, and nobody knows what it wanted them for."},
+	# --- Rift Lords: met only in the Rift (every 15th floor) and in Boss Rush ---
+	{"name": "THE TWIN ECLIPSE", "epithet": "Rift Lord", "hp": 480.0, "hue": 0.0, "half_width": 260.0,
+		"taunt": "One of us is always watching.", "tip": "Only the bright twin can be hurt. They trade places.",
+		"stage_lines": ["The orbit tightens", "Total eclipse"],
+		"death_title": "ECLIPSE BROKEN", "death_line": "Both lights go out together",
+		"lore": "A binary star that the Rift taught to hunt. The sun burns, the moon shields, and neither has ever been seen alone."},
+	{"name": "THE VOID LANCER", "epithet": "Rift Lord", "hp": 560.0, "hue": 0.0, "half_width": 150.0,
+		"taunt": "Run. I like it when they run.", "tip": "Its guard plate drops only while it attacks. Stay under it and shoot back.",
+		"stage_lines": ["It has your scent", "No more warning shots"],
+		"death_title": "HUNT ENDED", "death_line": "The Rift loses its hunter",
+		"lore": "Nobody built it for the Rift. It followed something in, a long time ago, and has been following things ever since."},
 ]
+## The bosses of the six sectors come first in LIST; the Rift Lords follow.
+const SECTOR_BOSSES := 6
+## Boss Rush fights every boss in this order.
+const RUSH_ORDER := [1, 2, 3, 7, 4, 5, 8, 6]
+## Boss Rush opens once this many sector bosses have fallen.
+const RUSH_UNLOCK := 3

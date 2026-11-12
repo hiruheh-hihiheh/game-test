@@ -33,11 +33,9 @@ const COLLAPSE_DELAY := 2.0
 const STAGGER := {"rain": 0.42, "dive": 0.55, "scatter": 0.6, "pincer": 0.3, "swarm": 0.14, "line": 0.0}
 
 ## Boss summons (rocks, raiders, mines, the Admiral's launch, the Tyrant's cinders, the Regent's raise, the Hydra's brood)
-## are queued in `game.pending`, which game.gd only advances in the PLAYING phase. In a boss fight they are queued and
-## never arrive, so the arrival markers are hidden: a warning must not announce something that does not happen. This
-## was found while building the warnings and left alone, because fixing it adds seven attacks to every boss fight. Set
-## this to true when the queue is advanced during a boss fight; a test fails until it matches the game.
-static var summons_arrive := false
+## are queued in `game.pending`. Their arrival markers are shown only while the game really delivers that queue during a
+## boss fight; a test probes the game and fails if this flag and the game disagree.
+static var summons_arrive := true
 
 var timed: Array = []
 var shown: Array = []

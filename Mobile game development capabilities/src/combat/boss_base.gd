@@ -208,6 +208,7 @@ func beam_part(x: float, width: float, from_y: float) -> Dictionary:
 ## Applies a hit. Returns false when the part stopped the shot cold. `wpn` is the weapon that hit, used only for how it looks and sounds.
 func take_hit(part: Dictionary, damage: float, at: Vector2, wpn := "") -> bool:
 	var mult: float = part.mult
+	g.combo_keep()
 	var power := clampf(damage / 1.1, 0.7, 2.0)
 	if mult <= 0.0 and float(part.own_hp) <= 0.0:
 		g.fx.impact(at, wpn if wpn != "" else "pulse", 0.8, "shield")
@@ -281,6 +282,7 @@ func _begin_death() -> void:
 	intent = {}
 	charge = 0.0
 	g.tg.clear()
+	g.pending.clear()
 	for e in g.enemies:
 		if not e.ally:
 			g._kill_enemy(e, true)

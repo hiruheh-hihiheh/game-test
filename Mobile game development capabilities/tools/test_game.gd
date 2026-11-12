@@ -89,6 +89,9 @@ func _run() -> void:
 	await _test_pilot_profile()
 	await _test_cloud_save()
 	await _test_combat_polish()
+	await _test_stars()
+	await _test_rewards()
+	await _test_rush()
 	await _test_telegraphs()
 	await _test_telegraph_bosses()
 	await _test_glass_hud()
@@ -4634,8 +4637,11 @@ func _test_telegraphs() -> void:
 
 ## A game with a boss that has finished entering, the ship parked where the checks expect it.
 func _tg_boss_game(sector: int):
-	var game = await _new_game(_level(sector * 10))
+	var game = await _new_game(_level(mini(sector, 6) * 10))
 	game.level.waves[0] = []
+	if sector > 6:
+		# Rift Lords have no campaign level of their own: borrow the last one's arena.
+		game.level.boss_id = sector
 	game.elite_chance = 0.0
 	_step(game, 2.5)
 	var guard := 0
@@ -4924,6 +4930,7 @@ func _tg_verify_markers(game, boss, name_: String, label: String, d: Dictionary,
 	check(game.tg.timed.is_empty(), label + ": and each marker is gone once its member has arrived")
 
 func _test_telegraph_bosses() -> void:
+	var Bosses_ = load("res://src/data/bosses.gd")
 	TgS = load("res://src/combat/telegraph.gd")
 	TgPaintS = load("res://src/combat/telegraph_paint.gd")
 	BfS = load("res://src/combat/bullet_field.gd")
@@ -4953,8 +4960,9 @@ func _test_telegraph_bosses() -> void:
 	check(hidden_ok, "while summons do not arrive, no marker or queued marker announces them")
 	probe.queue_free()
 	await process_frame
+	var summons_were: bool = TgS.summons_arrive
 	TgS.summons_arrive = true
-	for sector in range(1, 7):
+	for sector in range(1, Bosses_.LIST.size() + 1):
 		var game = await _tg_boss_game(sector)
 		var boss = game.boss
 		check(boss != null and not boss.entering, "boss %d is out and ready for its attacks" % sector)
@@ -5123,10 +5131,354 @@ func _test_telegraph_bosses() -> void:
 	check(game.tg.shown.is_empty() and game.field.count == 0, "and a dying boss produces no further warnings or shots")
 	game.queue_free()
 	await process_frame
-	TgS.summons_arrive = false
+	TgS.summons_arrive = summons_were
 	save.upgrades = {}
 	save.opt = saved_opt
 	print("telegraphs ok")
+
+# ---------- Stars ----------
+# Star 1 is clearing, star 2 is losing no hull, star 3 is the level's goal. A goal may never ask for more than the level
+# holds, a combo may not be broken by an empty screen, and crystals may not depend on luck.
+
+func _test_stars() -> void:
+	var ids: Array = range(1, 61) + [101, 102, 103, 104, 105, 106]
+	var kinds := {}
+	for n in ids:
+		var l: Dictionary = levels_db.build(n)
+		var kind := str(l.obj[0])
+		kinds[kind] = true
+		check(levels_db.OBJECTIVE_TEXT.has(kind), "level %d: goal type %s has a description" % [n, kind])
+		var limit: int = levels_db.star_limit(n, kind)
+		if limit >= 0:
+			check(int(l.obj[1]) >= 1 and int(l.obj[1]) <= limit, "level %d: '%s' asks for %d and the level holds enough for %d" % [n, levels_db.objective_text(l.obj), int(l.obj[1]), limit])
+	check(kinds.has("kills") and kinds.has("graze") and kinds.size() >= 10, "the campaign uses %d kinds of goal" % kinds.size())
+	# The supply estimate counts what the waves really contain.
+	var sup: Dictionary = levels_db.supply(13)
+	check(int(sup.tanks) == 6 and is_equal_approx(float(sup.kills), 14.0), "supply counts a level's enemies (level 13: 6 tanks, 14 hostiles)")
+	check(levels_db.star_limit(13, "tanks") == 4 and levels_db.star_limit(13, "time") == -1, "limits are a share of the supply, and uncounted goals have none")
+
+	var game = await _new_game(_level(3))
+	game.level.waves[0] = []
+	game.phase = game.Phase.PLAYING
+	game.elite_chance = 0.0
+	game.player_pos = Vector2(360, 1100)
+	game.player_target = game.player_pos
+	# Crystals: ten kills at a 30% drop chance give exactly three drops, every time.
+	for round_ in range(3):
+		_tg_reset(game)
+		game.pickups.clear()
+		game.drop_bank = 0.5
+		for i in range(10):
+			var e: Dictionary = game.spawn_enemy({"kind": "fighter", "pos": Vector2(100.0 + float(i) * 50.0, 300.0), "vel": Vector2.ZERO, "move": "straight"})
+			game._kill_enemy(e, true)
+		check(game.pickups.size() == 3, "ten fighters (30%% drop) leave exactly 3 crystals, with no dry streaks (round %d: %d)" % [round_ + 1, game.pickups.size()])
+	check(int(game.tracker.kills) == 30, "kills by the player are counted for 'Destroy N enemies'")
+	# Combo: an empty screen does not run it down, a target on screen does, and landing hits keeps it alive.
+	_tg_reset(game)
+	# One enemy still on its way in keeps the wave open, as between two groups of a real wave.
+	game.spawn_enemy({"kind": "fighter", "pos": Vector2(640, -200), "vel": Vector2.ZERO, "move": "straight"})
+	game.invuln = 999.0
+	game.combo = 9
+	game.combo_timer = 2.8
+	for i in range(150):
+		game._tick(STEP)
+	check(game.combo == 9 and game.phase == game.Phase.PLAYING, "five seconds with nothing on screen to shoot does not break a combo")
+	var target: Dictionary = game.spawn_enemy({"kind": "gunship", "pos": Vector2(90, 400), "vel": Vector2.ZERO, "move": "straight"})
+	target.fire = 99.0
+	for i in range(60):
+		game._hit_enemy(target, 0.01, target.pos, false)
+		game._tick(STEP)
+		game._tick(STEP)
+	check(game.combo == 9, "a tough target does not break a combo while you keep hitting it")
+	target.fire = 99.0
+	for i in range(100):
+		target.fire = 99.0
+		game._tick(STEP)
+	check(game.combo == 0, "a combo runs out after about 3 seconds of not hitting a target that is there")
+	game.combo = 7
+	game.combo_timer = 2.8
+	game.phase = game.Phase.UPGRADE
+	for i in range(150):
+		game._tick(STEP)
+	game.phase = game.Phase.PLAYING
+	check(game.combo == 7, "choosing a module between waves does not break a combo")
+	game.invuln = 0.0
+	game.shield = 0.0
+	game.hurt_player(30.0)
+	check(game.combo == 0 and game.hull_lost == 1, "losing a hull still ends the combo")
+	# Graze goal and the announcement when a counted goal is reached.
+	_tg_reset(game)
+	game.level.obj = ["graze", 3]
+	game.star_announced = false
+	var texts: int = game.fx.floaters.size()
+	for i in range(3):
+		game._on_graze(game.player_pos)
+	check(int(game.tracker.grazes) == 3 and game.objective_done() and game.objective_progress() == "3/3", "grazes are counted for 'Graze N enemy shots'")
+	game._tick(STEP)
+	game._tick(STEP)
+	check(game.star_announced and game.fx.floaters.size() == texts + 1, "reaching the goal is announced once, in flight")
+	game.level.obj = ["shield", 1]
+	game.star_announced = false
+	game._tick(STEP)
+	check(not game.star_announced, "goals about avoiding something are not announced early")
+	game.queue_free()
+	await process_frame
+	print("stars ok")
+
+# ---------- Daily Supply and Star Vault ----------
+
+func _test_rewards() -> void:
+	var R = load("res://src/data/rewards.gd")
+	var meta = root.get_node("Meta")
+	var saved_stats: Dictionary = save.stats.duplicate(true)
+	var saved_mask: Dictionary = save.star_mask.duplicate()
+	var saved_gear: Array = save.gear.duplicate(true)
+	var today: int = meta.today()
+	save.stats.erase("streak_day")
+	save.stats.erase("streak_count")
+	save.stats.erase("star_vault")
+	save.salvage = 0
+	save.parts = 0
+	var st: Dictionary = R.streak()
+	check(st.ready and int(st.day) == 1, "a new player can claim day 1 of the Daily Supply")
+	check(R.claim_streak() != "" and save.salvage == int(R.STREAK[0].salvage), "day 1 pays its salvage")
+	check(R.claim_streak() == "" and not R.streak().ready and save.salvage == int(R.STREAK[0].salvage), "and cannot be claimed twice in a day")
+	save.stats["streak_day"] = today - 1
+	st = R.streak()
+	check(st.ready and int(st.day) == 2, "the next day continues the streak at day 2")
+	R.claim_streak()
+	check(save.parts == int(R.STREAK[1].parts) and int(save.stats.streak_count) == 2, "day 2 pays its parts")
+	save.stats["streak_day"] = today - 3
+	st = R.streak()
+	check(st.ready and int(st.day) == 1, "missing a day restarts at day 1 and takes nothing away")
+	save.stats["streak_day"] = today - 1
+	save.stats["streak_count"] = 6
+	var items: Array = []
+	var gear_before: int = save.gear.size()
+	check(int(R.streak().day) == 7 and R.claim_streak(items) != "" and items.size() == 1 and int(items[0].rarity) >= gear_db.EPIC and save.gear.size() == gear_before + 1, "day 7 pays an Epic or better gear drop")
+	save.stats["streak_day"] = today - 1
+	check(int(R.streak().day) == 1 and int(R.streak().count) == 7, "after day 7 the week starts again without losing the streak")
+	# Star Vault
+	save.star_mask = {}
+	check(R.vault_ready() == 0 and R.claim_vault() == "", "no stars, nothing in the vault")
+	for n in range(1, 8):
+		save.star_mask[n] = 7
+	check(save.total_stars() == 21 and R.vault_ready() == 2, "21 stars open two vault tiers")
+	save.salvage = 0
+	check(R.claim_vault() != "" and save.salvage == int(R.vault_reward(1).salvage) and R.vault_ready() == 1, "claiming pays tier 1 and leaves tier 2 waiting")
+	R.claim_vault()
+	check(R.vault_ready() == 0 and R.claim_vault() == "" and R.vault_claimed() == 2, "a tier is paid once")
+	check(R.vault_tiers() == 18 and int(R.vault_reward(18).gear) == gear_db.LEGENDARY and int(R.vault_reward(3).gear) == gear_db.RARE and not R.vault_reward(2).has("gear"), "eighteen tiers, gear on every third, a Legendary for all 180 stars")
+	# The Ops screen shows both cards and their buttons work with real touches.
+	save.stats.erase("streak_day")
+	save.star_mask[8] = 7
+	save.star_mask[9] = 7
+	save.star_mask[10] = 7
+	var menu = load("res://title_screen.tscn").instantiate()
+	root.add_child(menu)
+	await process_frame
+	menu.pages.ops.tab = "today"
+	menu.go("ops")
+	await process_frame
+	await process_frame
+	check(menu.ui.rect_of("supply_claim").size.x > 0.0 and menu.ui.rect_of("vault_claim").size.x > 0.0, "Ops shows a claim button for the Daily Supply and the Star Vault")
+	var vault_before: int = R.vault_claimed()
+	menu.pages.ops.on_ui("supply_claim")
+	menu.pages.ops.on_ui("vault_claim")
+	await process_frame
+	await process_frame
+	check(not R.streak().ready and R.vault_claimed() == vault_before + 1, "claiming from Ops pays both")
+	check(not menu.ui.rect_of("supply_claim").size.x > 0.0 and not menu.ui.rect_of("vault_claim").size.x > 0.0, "and the claim buttons go away")
+	menu.queue_free()
+	await process_frame
+	save.stats = saved_stats
+	save.star_mask = saved_mask
+	save.gear = saved_gear
+	save.salvage = 0
+	save.parts = 0
+	print("rewards ok")
+
+# ---------- Rift Lords and Boss Rush ----------
+
+func _test_rush() -> void:
+	var B = load("res://src/data/bosses.gd")
+	var saved_stats: Dictionary = save.stats.duplicate(true)
+	var saved_beaten: Array = save.bosses_beaten.duplicate()
+	var saved_gear: Array = save.gear.duplicate(true)
+	var saved_unlocked: int = save.unlocked
+	check(B.LIST.size() == 8 and B.RUSH_ORDER.size() == 8, "there are eight bosses and Boss Rush fights all of them")
+	var seen := {}
+	for id in B.RUSH_ORDER:
+		seen[id] = true
+	check(seen.size() == 8 and B.RUSH_ORDER[-1] == 6, "every boss appears once and the Sunken Core is last")
+	check(int(levels_db.build_rush(4, 60).boss_id) == 7 and int(levels_db.build_rush(7, 60).boss_id) == 8, "the Rift Lords are the fourth and seventh fights")
+	check(int(levels_db.build_rush(8, 12).level) == 12 and int(levels_db.build_rush(1, 60).level) == 10 and int(levels_db.build_rush(8, 60).level) == 60, "a boss is as strong as in its own sector, capped at the level the player has reached")
+	check(int(levels_db.build_endless(5).boss_id) == 1 and int(levels_db.build_endless(10).boss_id) == 2 and int(levels_db.build_endless(15).boss_id) == 7 and int(levels_db.build_endless(30).boss_id) == 8 and int(levels_db.build_endless(45).boss_id) == 7, "the Rift meets a Rift Lord on every fifteenth floor")
+
+	# Each Rift Lord is fought through all three phases and killed by the bot.
+	save.upgrades = {"cannon": 6, "rapid": 6}
+	save.unlocked = 60
+	for pick in [[4, "Twin Eclipse"], [7, "Void Lancer"]]:
+		var game = await _new_game({"mode": "rush", "level": 60, "mutators": [], "stage": pick[0]})
+		var P = game.Phase
+		var guard := 0
+		while game.boss == null and guard < 500:
+			game.hull = game.max_hull
+			game._process(STEP)
+			guard += 1
+		check(game.boss != null and str(game.boss.def.name).to_lower().contains(str(pick[1]).to_lower()), "Boss Rush stage %d is the %s" % [pick[0], pick[1]])
+		var boss = game.boss
+		var stages := {}
+		var elapsed := 0.0
+		var next_nudge := 14.0
+		var hurt_while_guarded := false
+		var dark_hurt := false
+		while game.boss != null and elapsed < 240.0:
+			game.hull = game.max_hull
+			game.invuln = 1.0
+			_bot(game)
+			for i in range(3):
+				var hp_before: float = boss.hp
+				game._process(STEP)
+				elapsed += STEP
+			stages[boss.stage] = true
+			if boss.can_be_hit():
+				if pick[0] == 7:
+					# The plate is the first thing a shot from below meets, and it stops it.
+					var probe: Dictionary = boss.hit_part(boss.pos + Vector2(0, 130))
+					if boss.guard_up():
+						hurt_while_guarded = hurt_while_guarded or not is_same(probe, boss.plate) or boss.take_hit(probe, 1.0, boss.pos)
+				else:
+					var hp0: float = boss.hp
+					boss.take_hit(boss.dark(), 5.0, boss.dark().at)
+					dark_hurt = dark_hurt or boss.hp < hp0
+			if elapsed > next_nudge and boss.can_be_hit():
+				next_nudge += 4.0
+				boss.nova_hit(boss.max_hp * 0.2)
+		check(stages.size() == 3, "the %s reaches all 3 phases (saw %d)" % [pick[1], stages.size()])
+		check(game.boss == null and game.rush_beaten == 1, "the %s can be killed (%ds)" % [pick[1], int(elapsed)])
+		if pick[0] == 7:
+			check(not hurt_while_guarded, "the Void Lancer's guard plate stops every shot while it is up")
+		else:
+			check(not dark_hurt, "the Twin Eclipse's dark twin cannot be hurt")
+		game.queue_free()
+		await process_frame
+
+	# The Lancer drops its guard exactly while it charges and for a moment after it fires.
+	var lg = await _tg_boss_game(8)
+	var lancer = lg.boss
+	lancer.open_t = 0.0
+	lancer.charge = 0.0
+	lancer.tick(STEP)
+	check(lancer.guard_up(), "the Lancer's guard is up while it is not attacking")
+	lancer.attack_t = 0.0
+	lancer.update(STEP)
+	lancer.update(STEP)
+	check(lancer.charge > 0.0 and not lancer.guard_up(), "the guard drops as soon as it starts charging an attack")
+	while lancer.charge > 0.0:
+		lancer.update(STEP)
+	lancer.update(STEP)
+	check(not lancer.guard_up(), "and stays down just after the attack")
+	for i in range(45):
+		lancer.attack_t = 5.0
+		lancer.update(STEP)
+	check(lancer.guard_up(), "then comes back up")
+	var hp_open: float = lancer.hp
+	check(not lancer.take_hit(lancer.plate, 3.0, lancer.pos) and lancer.hp == hp_open, "a hit on the plate does nothing")
+	lg.queue_free()
+	await process_frame
+
+	# The twins trade places, and only the lit one takes damage.
+	var eg = await _tg_boss_game(7)
+	var twins = eg.boss
+	var first_lit: Dictionary = twins.lit
+	var hp_a: float = twins.hp
+	twins.take_hit(twins.lit, 4.0, twins.lit.at)
+	check(twins.hp < hp_a and float(twins.dark().mult) == 0.0 and bool(twins.lit.weak), "the lit twin takes damage and is the marked weak point")
+	twins.swap_t = 0.01
+	twins.charge = 0.0
+	twins.attack_t = 5.0
+	twins.update(STEP)
+	check(not is_same(twins.lit, first_lit) and float(first_lit.mult) == 0.0, "the twins trade places")
+	eg.queue_free()
+	await process_frame
+
+	# A whole Boss Rush: eight bosses, a module and a repair between them, a guaranteed drop at the end.
+	save.stats.erase("rush_clear")
+	save.stats.erase("rush_best")
+	var run = await _new_game({"mode": "rush", "level": 60, "mutators": []})
+	var RP = run.Phase
+	var order: Array = []
+	var repaired := false
+	var steps := 0
+	var cards := 0
+	while run.phase != RP.CLEAR and run.phase != RP.DEFEAT and steps < 30000:
+		steps += 1
+		run.invuln = 1.0
+		if run.phase == RP.UPGRADE:
+			if run.card_picked < 0 and run.input_lock <= 0.0 and not run.card_options.is_empty():
+				run.select_card(0)
+				cards += 1
+		elif run.boss != null and run.boss.can_be_hit() and run.boss.dying <= 0.0:
+			order.append(str(run.boss.def.name))
+			if order.size() == 2:
+				run.hull = run.max_hull - 1
+			run.boss._apply(run.boss.max_hp * 5.0)
+		if order.size() == 2 and run.boss == null and run.hull == run.max_hull:
+			repaired = true
+		run._process(STEP)
+	var want: Array = []
+	for id in B.RUSH_ORDER:
+		want.append(str(B.LIST[id - 1].name))
+	check(run.phase == RP.CLEAR and order == want, "Boss Rush runs all eight bosses in order and then ends in a win (%d fought)" % order.size())
+	check(cards == 7, "a module is offered between bosses (%d)" % cards)
+	check(repaired, "a hull is repaired when a boss falls")
+	check(run.rush_beaten == 8 and int(save.stats.get("rush_best", 0)) == 8 and int(save.stats.get("rush_clear", 0)) == 1, "the run is recorded")
+	var best_drop := -1
+	for it in run.loot:
+		best_drop = maxi(best_drop, int(it.rarity))
+	check(best_drop == gear_db.LEGENDARY, "the first clear pays Legendary gear")
+	run.queue_free()
+	await process_frame
+	# A defeat part-way keeps what was reached.
+	save.stats.erase("rush_best")
+	var lost = await _new_game({"mode": "rush", "level": 60, "mutators": []})
+	steps = 0
+	while lost.rush_beaten < 2 and steps < 8000:
+		steps += 1
+		lost.invuln = 1.0
+		if lost.phase == lost.Phase.UPGRADE and lost.card_picked < 0 and lost.input_lock <= 0.0 and not lost.card_options.is_empty():
+			lost.select_card(0)
+		elif lost.boss != null and lost.boss.can_be_hit() and lost.boss.dying <= 0.0:
+			lost.boss._apply(lost.boss.max_hp * 5.0)
+		lost._process(STEP)
+	lost._show_defeat()
+	check(lost.phase == lost.Phase.DEFEAT and int(save.stats.get("rush_best", 0)) == 2 and int(save.stats.get("rush_clear", 0)) == 1, "losing on the third boss records 2 bosses and no clear")
+	lost.queue_free()
+	await process_frame
+
+	# Ops: locked until three sector bosses have fallen.
+	save.bosses_beaten = [1, 2]
+	var menu = load("res://title_screen.tscn").instantiate()
+	root.add_child(menu)
+	await process_frame
+	menu.pages.ops.tab = "today"
+	menu.go("ops")
+	await process_frame
+	await process_frame
+	check(menu.ui.rect_of("rush").size.x > 0.0 and not menu.pages.ops.rush_open(), "Ops shows Boss Rush, locked with two bosses beaten")
+	menu.pages.ops.on_ui("rush")
+	check(menu.launching <= 0.0, "and a locked Boss Rush does not launch")
+	save.bosses_beaten = [1, 2, 3]
+	check(menu.pages.ops.rush_open(), "three bosses beaten opens it")
+	menu.queue_free()
+	await process_frame
+	save.stats = saved_stats
+	save.bosses_beaten = saved_beaten
+	save.gear = saved_gear
+	save.unlocked = saved_unlocked
+	save.upgrades = {}
+	print("rush ok")
 
 func engine_peak_reference(EngineS) -> float:
 	# What a ship flat out would show with Reduce Motion off: the calm one must be below it.
